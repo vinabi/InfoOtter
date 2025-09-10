@@ -1,4 +1,4 @@
-# app.py — Streamlit Cloud–ready; resilient imports + local fallbacks
+# app.py — Streamlit Cloud: prefer your toolchain; keep graph as first try
 import os, re, json, tempfile, sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -20,98 +20,23 @@ def _load_secrets_into_env():
 
 _load_secrets_into_env()
 
-# Ensure repo root is on sys.path for "src" package
+# Ensure repo root on sys.path so "src" imports work on Cloud
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# ------------------------- 2) Import pipeline (with shims) --------------------
-# compiled graph
+# ------------------------- 2) Import your pipeline & tools --------------------
+# LangGraph compiled (first attempt)
 try:
     from src.graph import compiled
 except Exception:
-    import importlib
-    compiled = importlib.import_module("src.graph").compiled  # may still raise
+    compiled = None
 
-# url->markdown extractor (we rely on this to guarantee full body)
-try:
-    from src.tools.url2md import url_to_markdown
-except Exception:
-    # tiny fallback to avoid crash; very last resort
-    import requests
-    from html import unescape
-
-    def url_to_markdown(url: str, timeout: int = 15) -> str:
-        try:
-            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
-            r.raise_for_status()
-            return unescape(r.text[:40000])
-        except Exception:
-            return f"# Unable to fetch\n\n{url}\n"
-
-# try official helpers; otherwise provide local fallbacks
-try:
-    from src.agents import render_markdown_brief as _render_md_from_agents
-    from src.agents import get_llm as _get_llm_from_agents
-except Exception:
-    _render_md_from_agents = None
-    _get_llm_from_agents = None
-
-def render_markdown_brief(brief: Dict[str, Any]) -> str:
-    if _render_md_from_agents:
-        try:
-            return _render_md_from_agents(brief)
-        except Exception:
-            pass
-    # Local safe renderer
-    topic = brief.get("topic", "")
-    summary = brief.get("summary", "")
-    facts = brief.get("key_facts") or []
-    sources = brief.get("sources") or []
-    lines = [f"# Market Brief: {topic}", "", summary, ""]
-    if facts:
-        lines.append("## Key Facts")
-        for f in facts:
-            ev = f.get("evidence_url", "")
-            conf = f.get("confidence", 0)
-            lines.append(f"- {f.get('fact','')}")
-            if ev:
-                lines.append(f"  Evidence: {ev} (confidence {conf:.2f})")
-        lines.append("")
-    if sources:
-        lines.append("## References")
-        for i, s in enumerate(sources, 1):
-            title = s.get("title") or "Untitled"
-            url = s.get("url", "")
-            pub = s.get("published_at") or ""
-            lines.append(f"{i}. [{title}]({url}) {pub}")
-        lines.append("")
-    return "\n".join(lines)
-
-def get_llm():
-    if _get_llm_from_agents:
-        try:
-            return _get_llm_from_agents()
-        except Exception:
-            pass
-
-    # Local stub / GROQ minimal
-    class _Stub:
-        def invoke(self, prompt: str):
-            class R:
-                def __init__(self, text): self.content = text
-            # naive condensation
-            lines = [ln.strip() for ln in prompt.splitlines() if ln.strip()][:60]
-            return R("\n".join(lines) + "\n\n(Stub summary)")
-
-    if os.getenv("GROQ_API_KEY"):
-        try:
-            from langchain_groq import ChatGroq
-            model = os.getenv("GROQ_MODEL", "llama3-70b-8192")
-            return ChatGroq(model_name=model, temperature=0.2)
-        except Exception:
-            pass
-    return _Stub()
+# Your agents and tools (used for direct fallback path and also to render)
+# If any import fails on Cloud, we’ll raise a visible error instead of silently stubbing.
+from src.agents import get_llm, run_analyst, run_writer, render_markdown_brief
+from src.tools.search import aggregate_search, enrich_with_content
+from src.tools.url2md import url_to_markdown  # used when user inputs a direct URL
 
 # ------------------------- 3) UI config ---------------------------------------
 st.set_page_config(page_title="Market Brief Agent", page_icon="📈", layout="wide")
@@ -123,97 +48,62 @@ def is_url(s: str) -> bool:
     return bool(URL_RE.match((s or "").strip()))
 
 def _safe_artifacts_dir() -> Path:
-    # temp is writable on Streamlit Cloud
     base = Path(tempfile.gettempdir()) / "market_agent_artifacts"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
-def _run_pipeline(query: str) -> Dict[str, Any]:
-    state_in = {"query": query, "failure_count": 0}
+# ------------------------- 4) Runners -----------------------------------------
+def run_graph_pipeline(query: str) -> Dict[str, Any]:
+    """Try your LangGraph compiled pipeline (if available)."""
+    if compiled is None:
+        return {}
+    cfg = {}
     try:
         from src.observability import get_callbacks
         cfg = {"callbacks": get_callbacks()}
     except Exception:
-        cfg = {}
-    out = compiled.invoke(state_in, config=cfg)
-    return out.get("brief") or {}
-
-def _llm_summarize_from_sections(query: str, sections_md: str, facts_json: str) -> str:
-    llm = get_llm()  # uses Groq if GROQ_API_KEY in secrets; else stub
-    prompt = f"""
-Create a detailed market brief on **{query}** using ONLY the material in the sections below.
-Structure:
-- Executive Summary (≤ 8 sentences)
-- Key Insights (bullets, include inline [#] citations)
-- Competitive / Ecosystem Snapshot
-- Outlook (near-term)
-- Limitations (1–2 bullets)
-Return pure Markdown, no extra JSON.
-
-### Source Sections
-{sections_md}
-
-### Extracted Facts (JSON)
-{facts_json}
-"""
+        pass
+    state_in = {"query": query, "failure_count": 0}
     try:
-        return llm.invoke(prompt).content
-    except Exception:
-        # Fallback: stitch sections so the body is never empty
-        return f"# Market Brief: {query}\n\n{sections_md}\n"
+        out = compiled.invoke(state_in, config=cfg)
+        return (out or {}).get("brief") or {}
+    except Exception as e:
+        # Surface to UI log but continue to fallback
+        st.toast(f"Graph failed: {type(e).__name__}", icon="⚠️")
+        return {}
 
-def guarantee_full_markdown(query: str, brief: Dict[str, Any]) -> Dict[str, Any]:
-    md = (brief.get("_markdown") or "").strip()
-    sources = brief.get("sources") or []
-    facts = brief.get("key_facts") or []
+def run_direct_toolchain(query: str) -> Dict[str, Any]:
+    """
+    Use your src.tools + src.agents directly:
+    - search → enrich
+    - analyst facts
+    - writer (uses url2md path for full markdown extraction)
+    This mirrors the local behavior that produced rich reports.
+    """
+    llm = get_llm()
 
-    # If it already looks substantive, keep it
-    if md and len(md) >= 800 and "References" in md:
-        return {**brief, "_markdown": md}
-
-    # Build sections from top sources
-    sections: List[str] = []
-    live_sources: List[Dict[str, Any]] = []
-    for idx, s in enumerate(sources[:8], 1):
-        url = s.get("url")
-        title = s.get("title") or (url or f"Source {idx}")
-        if not url:
-            continue
+    # If query is a URL, use it as the primary (seed) source and still allow a few more
+    if is_url(query):
+        seed = [{"title": query, "url": query, "description": "User-provided URL", "source": "user"}]
+        # Try extracting upfront so writer has content even if search fails on Cloud
         try:
-            sec = url_to_markdown(url)
+            _ = url_to_markdown(query)
         except Exception:
-            sec = ""
-        # keep enough context to write real summaries
-        sec = "\n".join(sec.splitlines()[:220])
-        sections.append(f"#### [{idx}] {title}\n{sec}\n")
-        live_sources.append({"title": title, "url": url, "published_at": s.get("published_at")})
+            pass
+        fetched = seed + aggregate_search(query, max_results=int(os.getenv("MAX_SOURCES", "10")) - 1)
+    else:
+        fetched = aggregate_search(query, max_results=int(os.getenv("MAX_SOURCES", "10")))
 
-    # If nothing fetched, render minimal
-    if not sections:
-        return {**brief, "_markdown": render_markdown_brief(brief)}
+    enriched = enrich_with_content(fetched)
+    facts = run_analyst(llm, query, enriched)
+    brief = run_writer(llm, query, facts, enriched)  # returns dict with _markdown, sources, etc.
+    return brief or {}
 
-    sections_md = "\n\n---\n\n".join(sections)
-    facts_json = json.dumps(facts, ensure_ascii=False, indent=2)
+def is_substantive(md: str) -> bool:
+    text = (md or "").strip()
+    return bool(text and len(text) >= 800 and "References" in text)
 
-    # Always synthesize a full report (don’t rely on earlier writer output)
-    draft = _llm_summarize_from_sections(query, sections_md, facts_json)
-
-    # Add numbered references
-    refs = "\n".join([f"{i}. [{s['title']}]({s['url']})" for i, s in enumerate(live_sources, 1)])
-    md_final = f"{draft}\n\n## References\n{refs}\n"
-    return {**brief, "sources": live_sources or sources, "_markdown": md_final}
-
-def _inject_seed_url(user_input: str, brief: Dict[str, Any]) -> Dict[str, Any]:
-    if not is_url(user_input):
-        return brief
-    url = user_input.strip()
-    srcs = brief.get("sources") or []
-    if not any((s.get("url") or "").strip().lower() == url.lower() for s in srcs):
-        srcs = [{"title": url, "url": url, "published_at": None}, *srcs]
-    brief["sources"] = srcs
-    return brief
-
-# ------------------------- 4) Sidebar controls --------------------------------
+# ------------------------- 5) Sidebar controls --------------------------------
 with st.sidebar:
     st.header("Settings")
     user_input = st.text_area(
@@ -227,19 +117,19 @@ with st.sidebar:
         max_sources = st.number_input("Max sources", 3, 30, int(os.getenv("MAX_SOURCES", "10")))
     with col2:
         min_non_empty = st.number_input("Min non-empty", 1, 20, int(os.getenv("MIN_NON_EMPTY_SOURCES", "5")))
-    llm_mode = st.selectbox("LLM mode", ["groq", "stub"], index=0 if os.getenv("LLM_MODE", "groq").lower() == "groq" else 1)
-    tracing_on = st.toggle("LangSmith tracing", value=os.getenv("LANGSMITH_ENABLED", "false").lower() in ("1", "true", "yes", "on"))
-    http_timeout = st.slider("HTTP timeout (s)", 5, 60, int(os.getenv("HTTP_TIMEOUT", "15")))
+    llm_mode = st.selectbox("LLM mode", ["groq", "stub"], index=0 if os.getenv("LLM_MODE","groq").lower()=="groq" else 1)
+    tracing_on = st.toggle("LangSmith tracing", value=os.getenv("LANGSMITH_ENABLED","false").lower() in ("1","true","yes","on"))
+    http_timeout = st.slider("HTTP timeout (s)", 5, 60, int(os.getenv("HTTP_TIMEOUT","15")))
     run_btn = st.button("▶️ Run", type="primary", use_container_width=True)
 
-# Mirror sidebar to env for backend tools
+# Mirror sidebar to env for backend nodes/tools
 os.environ["MAX_SOURCES"] = str(max_sources)
 os.environ["MIN_NON_EMPTY_SOURCES"] = str(min_non_empty)
 os.environ["LLM_MODE"] = llm_mode
 os.environ["LANGSMITH_ENABLED"] = "true" if tracing_on else "false"
 os.environ["HTTP_TIMEOUT"] = str(http_timeout)
 
-# ------------------------- 5) Run + display -----------------------------------
+# ------------------------- 6) Execute + render --------------------------------
 left, right = st.columns([2, 1])
 
 if run_btn:
@@ -249,24 +139,24 @@ if run_btn:
         st.stop()
 
     with st.status("Running research pipeline…", expanded=True) as status:
-        status.write("• Searching & collecting sources")
-        status.write("• Extracting facts")
-        status.write("• Writing the brief")
+        status.write("• Trying graph pipeline")
+        brief = run_graph_pipeline(q)
 
-        try:
-            brief = _run_pipeline(q)
-        except Exception as e:
-            status.update(label="Error ❌", state="error")
-            st.exception(e)
-            st.stop()
+        # If the graph returned nothing or only refs, switch to your direct toolchain
+        md = brief.get("_markdown") if brief else ""
+        if not is_substantive(md):
+            status.write("• Falling back to direct toolchain (tools + agents)")
+            brief = run_direct_toolchain(q)
+            md = brief.get("_markdown") or ""
 
-        brief = _inject_seed_url(q, brief)
-        brief = guarantee_full_markdown(q, brief)
+        # As an extra safety, render minimal markdown if writer omitted it
+        if not md:
+            md = render_markdown_brief(brief)
+
         status.update(label="Done ✅", state="complete")
 
-    # Save artifacts in a Cloud-writable temp dir
+    # Save artifacts to Cloud-writable temp dir
     art_dir = _safe_artifacts_dir()
-    md = brief.get("_markdown") or render_markdown_brief(brief)
     (art_dir / "brief.md").write_text(md, encoding="utf-8")
     (art_dir / "sample_output.json").write_text(json.dumps(brief, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -280,7 +170,11 @@ if run_btn:
         st.subheader("Sources")
         srcs = brief.get("sources") or []
         if srcs:
-            df = pd.DataFrame([{"title": s.get("title", ""), "url": s.get("url", ""), "published_at": s.get("published_at", "")} for s in srcs])
+            df = pd.DataFrame([{
+                "title": s.get("title",""),
+                "url": s.get("url",""),
+                "published_at": s.get("published_at","")
+            } for s in srcs])
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             st.info("No sources found.")
@@ -288,7 +182,11 @@ if run_btn:
         st.subheader("Facts")
         facts = brief.get("key_facts") or []
         if facts:
-            df_f = pd.DataFrame([{"fact": f.get("fact", ""), "evidence_url": f.get("evidence_url", ""), "confidence": f.get("confidence", 0.0)} for f in facts])
+            df_f = pd.DataFrame([{
+                "fact": f.get("fact",""),
+                "evidence_url": f.get("evidence_url",""),
+                "confidence": f.get("confidence", 0.0),
+            } for f in facts])
             st.dataframe(df_f, use_container_width=True, hide_index=True)
         else:
             st.info("No extracted facts available.")
