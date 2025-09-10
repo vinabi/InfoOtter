@@ -22,13 +22,25 @@ from src.observability import get_callbacks
 
 # ---------- UI ----------
 st.set_page_config(page_title="Market Research Multiagent", page_icon="📈", layout="wide")
+
 st.markdown("""
 <style>
-div[data-testid="st.info"] {
-    background-color: #3D155F;
-    color: #ffffff;          /* white text for contrast */
-    border: 1px solid #2a0e43;
-    border-radius: 8px;
+/* Try all Streamlit alert selectors */
+div[data-testid="stAlert"],               /* new */
+div[role="alert"],                        /* generic */
+div.stAlert,                              /* older */
+section.main div[data-baseweb="notification"] /* some builds */ {
+  background: #3D155F !important;
+  color: #ffffff !important;
+  border: 1px solid #2a0e43 !important;
+  border-radius: 8px !important;
+}
+
+/* Ensure inner text/icon inherits white */
+div[data-testid="stAlert"] * ,
+div[role="alert"] * {
+  color: #ffffff !important;
+  fill: #ffffff !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -160,7 +172,23 @@ if run_btn:
             st.info("No extracted facts available.")
 
 else:
-    st.info("Enter a topic in the sidebar and click **Run research** to generate a brief.")
+    #st.info("Enter a topic in the sidebar and click **Run research** to generate a brief.")
+    message = "Enter a topic in the sidebar and click **Run research** to generate a brief."
+    st.markdown("""
+    <style>
+    .brand-info {
+      background:#3D155F;
+      color:#ffffff;
+      border:1px solid #2a0e43;
+      border-radius:8px;
+      padding:12px 16px;
+      font-size:0.95rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f'<div class="brand-info">{message}</div>', unsafe_allow_html=True)
+
 
 
 
