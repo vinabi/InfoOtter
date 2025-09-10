@@ -172,8 +172,7 @@ if run_btn:
             st.info("No extracted facts available.")
 
 else:
-    #st.info("Enter a topic in the sidebar and click **Run research** to generate a brief.")
-    message = "Enter a topic in the sidebar and click **Run research** to generate a brief."
+    message = "Enter a topic in the sidebar and click 𝗥𝘂𝗻 𝗿𝗲𝘀𝗲𝗮𝗿𝗰𝗵 to generate a brief."
     st.markdown("""
     <style>
     .brand-info {
@@ -188,7 +187,6 @@ else:
     """, unsafe_allow_html=True)
 
     st.markdown(f'<div class="brand-info">{message}</div>', unsafe_allow_html=True)
-
 
 
 
