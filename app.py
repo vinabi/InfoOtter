@@ -19,7 +19,7 @@ ARTIFACTS.mkdir(parents=True, exist_ok=True)
 # Import your pipeline
 # NOTE: your repo already exposes compiled graph + writer/render helpers
 from src.graph import compiled
-from src.agents import render_markdown_brief, get_llm  # render fallback if needed
+from src.agents import get_llm 
 from src.observability import get_callbacks
 
 # ---------- UI ----------
@@ -57,7 +57,7 @@ with st.sidebar:
     # Network timeouts, etc.
     http_timeout = st.slider("HTTP timeout (s)", min_value=5, max_value=60, value=int(os.getenv("HTTP_TIMEOUT", "15")))
 
-    run_btn = st.button("▶️ Run research", type="primary", use_container_width=True)
+    run_btn = st.button("Run research", type="primary", use_container_width=True)
 
 # Keep env in sync for the current process (does not overwrite your .env)
 os.environ["MAX_SOURCES"] = str(max_sources)
@@ -93,9 +93,9 @@ if run_btn:
         st.write("• Writing the brief")
         try:
             brief = run_pipeline(topic.strip())
-            status.update(label="Done ✅", state="complete")
+            status.update(label="Done", state="complete")
         except Exception as e:
-            status.update(label="Error ❌", state="error")
+            status.update(label="Error", state="error")
             st.exception(e)
             st.stop()
 
@@ -110,7 +110,7 @@ if run_btn:
         st.markdown(md)
 
         st.download_button(
-            "💾 Download Markdown",
+            "Download Markdown",
             data=md.encode("utf-8"),
             file_name="brief.md",
             mime="text/markdown",
@@ -118,7 +118,7 @@ if run_btn:
         )
 
         st.download_button(
-            "💾 Download JSON",
+            "Download JSON",
             data=json.dumps(brief, indent=2, ensure_ascii=False).encode("utf-8"),
             file_name="sample_output.json",
             mime="application/json",
@@ -153,3 +153,4 @@ if run_btn:
 
 else:
     st.info("Enter a topic in the sidebar and click **Run research** to generate a brief.")
+
