@@ -17,7 +17,6 @@ def _load_secrets_into_env():
                     os.environ[str(kk)] = str(vv)
     except Exception:
         pass
-
 _load_secrets_into_env()
 
 # ------------------------- Make 'src' importable ------------------------------
@@ -27,11 +26,36 @@ if str(ROOT) not in sys.path:
 
 # Require your actual code — if this fails, we want to see it
 from src.graph import compiled
-from src.agents import render_markdown_brief  # only for display fallback
 try:
     from src.observability import get_callbacks
 except Exception:
     def get_callbacks(): return []
+
+# ------------------------- Local fallback renderer ----------------------------
+def render_markdown_brief(brief: Dict[str, Any]) -> str:
+    topic = brief.get("topic", "")
+    summary = brief.get("summary", "")
+    facts = brief.get("key_facts") or []
+    sources = brief.get("sources") or []
+    lines = [f"# Market Brief: {topic}", "", summary, ""]
+    if facts:
+        lines.append("## Key Facts")
+        for f in facts:
+            ev = f.get("evidence_url", "")
+            conf = f.get("confidence", 0)
+            lines.append(f"- {f.get('fact','')}")
+            if ev:
+                lines.append(f"  Evidence: {ev} (confidence {conf:.2f})")
+        lines.append("")
+    if sources:
+        lines.append("## References")
+        for i, s in enumerate(sources, 1):
+            title = s.get("title") or "Untitled"
+            url = s.get("url","")
+            pub = s.get("published_at") or ""
+            lines.append(f"{i}. [{title}]({url}) {pub}")
+        lines.append("")
+    return "\n".join(lines)
 
 # ------------------------- Streamlit UI --------------------------------------
 st.set_page_config(page_title="Market Brief Agent", page_icon="📈", layout="wide")
@@ -46,14 +70,13 @@ with st.sidebar:
         height=90,
         placeholder="e.g., agent-to-agent (A2A) and MCP OR https://example.com/post"
     )
-
     col1, col2 = st.columns(2)
     with col1:
         max_sources = st.number_input("MAX_SOURCES", 3, 50, int(os.getenv("MAX_SOURCES", "10")))
     with col2:
         min_non_empty = st.number_input("MIN_NON_EMPTY_SOURCES", 1, 20, int(os.getenv("MIN_NON_EMPTY_SOURCES", "5")))
     http_timeout = st.slider("HTTP_TIMEOUT (s)", 5, 60, int(os.getenv("HTTP_TIMEOUT", "15")))
-    tracing = st.toggle("LangSmith tracing", value=os.getenv("LANGSMITH_ENABLED", "false").lower() in ("1","true","yes","on"))
+    tracing = st.toggle("LangSmith tracing", value=os.getenv("LANGSMITH_ENABLED","false").lower() in ("1","true","yes","on"))
     run_btn = st.button("▶️ Run", type="primary", use_container_width=True)
 
 # Mirror sidebar to env so your existing nodes/tools read them
@@ -62,29 +85,10 @@ os.environ["MIN_NON_EMPTY_SOURCES"] = str(min_non_empty)
 os.environ["HTTP_TIMEOUT"] = str(http_timeout)
 os.environ["LANGSMITH_ENABLED"] = "true" if tracing else "false"
 
-# Quick health panel: confirms Cloud actually sees your keys
-with st.expander("🔎 Health / Keys (redacted)"):
-    def _mask(v: str) -> str:
-        if not v: return "—"
-        v = str(v)
-        return v[:4] + "…" + v[-4:] if len(v) > 10 else "set"
-    st.write({
-        "GROQ_API_KEY": _mask(os.getenv("GROQ_API_KEY")),
-        "RAPIDAPI_KEY": _mask(os.getenv("RAPIDAPI_KEY")),
-        "TAVILY_API_KEY": _mask(os.getenv("TAVILY_API_KEY")),
-        "SERP_API_KEY": _mask(os.getenv("SERP_API_KEY")),
-        "NEWSAPI_KEY": _mask(os.getenv("NEWSAPI_KEY")),
-        "LANGSMITH_ENABLED": os.getenv("LANGSMITH_ENABLED"),
-        "MAX_SOURCES": os.getenv("MAX_SOURCES"),
-        "MIN_NON_EMPTY_SOURCES": os.getenv("MIN_NON_EMPTY_SOURCES"),
-        "HTTP_TIMEOUT": os.getenv("HTTP_TIMEOUT"),
-    })
-
 # ------------------------- Run your chain ------------------------------------
 left, right = st.columns([2, 1])
 
 def _artifacts_dir() -> Path:
-    # temp is always writable on Streamlit Cloud
     p = Path(tempfile.gettempdir()) / "market_agent_artifacts"
     p.mkdir(parents=True, exist_ok=True)
     return p
@@ -96,7 +100,6 @@ if run_btn:
         st.stop()
 
     with st.status("Running your pipeline…", expanded=True) as status:
-        status.write("• invoking compiled LangGraph")
         state_in: Dict[str, Any] = {"query": q, "failure_count": 0}
         try:
             final = compiled.invoke(state_in, config={"callbacks": get_callbacks()})
@@ -107,18 +110,14 @@ if run_btn:
             st.exception(e)
             st.stop()
 
-    # Render using whatever your writer produced
     md = (brief.get("_markdown") or "").strip()
     if not md:
-        # fallback: render minimal from your structured brief
         md = render_markdown_brief(brief)
 
-    # Persist artifacts to Cloud-safe temp dir
     outdir = _artifacts_dir()
     (outdir / "brief.md").write_text(md, encoding="utf-8")
     (outdir / "sample_output.json").write_text(json.dumps(brief, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    # Display Markdown
     with left:
         st.subheader("Brief (Markdown)")
         st.markdown(md)
@@ -126,7 +125,6 @@ if run_btn:
         st.download_button("💾 Download JSON", json.dumps(brief, indent=2, ensure_ascii=False).encode("utf-8"),
                            "sample_output.json", "application/json", use_container_width=True)
 
-    # Display Sources & Facts (as produced by YOUR pipeline)
     with right:
         st.subheader("Sources")
         srcs = brief.get("sources") or []
