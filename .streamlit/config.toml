@@ -1,8 +1,8 @@
 [theme]
 # app background
-backgroundColor = "#FFFFFF"
+backgroundColor = "#CFCAA8"
 # for containers/sidebar
-secondaryBackgroundColor = "#c6cedbff"
+secondaryBackgroundColor = "#C35E87"
 # Brand accent 
 primaryColor = "#0274BD"
 # Body text (off-white for contrast)
