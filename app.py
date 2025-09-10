@@ -1,4 +1,4 @@
-# app.py  — drop-in replacement
+# app.py — Streamlit Cloud–safe, secrets-first
 import os
 import json
 from pathlib import Path
@@ -9,28 +9,24 @@ import streamlit as st
 from dotenv import load_dotenv
 from importlib import reload
 
-# ---------- 0) Load configuration EARLY ----------
-# Local dev: .env
+# ---------- 0) Load config EARLY ----------
+# Local .env (dev)
 load_dotenv(override=False)
 
-# Streamlit Cloud: secrets.toml → os.environ
+# Streamlit Cloud secrets → env (MUST be before importing pipeline)
 if hasattr(st, "secrets"):
     for k, v in st.secrets.items():
         os.environ[str(k)] = str(v)
 
-# ---------- 1) Page + minimal theming ----------
+# ---------- 1) Page + styles ----------
 st.set_page_config(page_title="Market Research Multiagent", page_icon="📈", layout="wide")
-
-# Info bar color override (#3D155F)
 st.markdown("""
 <style>
 div[data-testid="stAlert"], div[role="alert"], div.stAlert {
-  background: #3D155F !important;
-  color: #ffffff !important;
-  border: 1px solid #2a0e43 !important;
-  border-radius: 8px !important;
+  background: #3D155F !important; color: #fff !important;
+  border: 1px solid #2a0e43 !important; border-radius: 8px !important;
 }
-div[data-testid="stAlert"] *, div[role="alert"] * { color:#fff !important; fill:#fff !important; }
+div[data-testid="stAlert"] *, div[role="alert"] * { color: #fff !important; fill: #fff !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,12 +35,11 @@ ROOT = Path(__file__).resolve().parent
 ARTIFACTS = ROOT / "artifacts"
 ARTIFACTS.mkdir(parents=True, exist_ok=True)
 
-# ---------- 3) Sidebar (choose settings BEFORE importing pipeline) ----------
+# ---------- 3) Sidebar FIRST (so env is ready before building graph) ----------
 st.sidebar.header("Settings")
 
 default_topic = os.getenv("QUERY", "").strip().strip('"') or "agent-to-agent (A2A) and Model Context Protocol (MCP)"
-topic = st.sidebar.text_area("Research topic", value=default_topic, height=90,
-                             placeholder="e.g., artificial intelligence applications in healthcare")
+topic = st.sidebar.text_area("Research topic", value=default_topic, height=90)
 
 c1, c2 = st.sidebar.columns(2)
 max_sources = c1.number_input("Max sources", min_value=3, max_value=30,
@@ -64,7 +59,7 @@ http_timeout = st.sidebar.slider("HTTP timeout (s)", min_value=5, max_value=60,
 
 run_btn = st.sidebar.button("Run research", type="primary", use_container_width=True)
 
-# Apply sidebar choices to the current process env (so imports below see them)
+# Apply the sidebar choices to env (so modules see them)
 os.environ["MAX_SOURCES"] = str(max_sources)
 os.environ["MIN_NON_EMPTY_SOURCES"] = str(min_non_empty)
 os.environ["LLM_MODE"] = llm_mode
@@ -72,7 +67,7 @@ os.environ["LANGSMITH_ENABLED"] = "true" if tracing_on else "false"
 os.environ["ALLOW_STUBS"] = "true" if allow_stubs else "false"
 os.environ["HTTP_TIMEOUT"] = str(http_timeout)
 
-# ---------- 4) Import / reload pipeline AFTER env is ready ----------
+# ---------- 4) Import / reload pipeline AFTER env is set ----------
 import src.agents as agents
 import src.graph as graph
 import src.observability as observability
@@ -84,7 +79,7 @@ reload(observability)
 compiled = graph.compiled
 get_callbacks = observability.get_callbacks
 
-# Safe renderer: use writer’s markdown if present, else fallback function
+# Safe renderer (uses writer’s _markdown if available)
 def _render_markdown_fallback(brief: Dict) -> str:
     lines = [f"# Market Brief: {brief.get('topic','')}", ""]
     if brief.get("summary"): lines += [brief["summary"], ""]
@@ -107,27 +102,22 @@ def _render_markdown_fallback(brief: Dict) -> str:
     return "\n".join(lines)
 
 def render_markdown(brief: Dict) -> str:
-    # Prefer writer-generated markdown
-    md = brief.get("_markdown")
-    if md: return md
-    # Fallback to agents.render_markdown_brief if it exists
+    if brief.get("_markdown"):
+        return brief["_markdown"]
     fn = getattr(agents, "render_markdown_brief", None)
     if callable(fn):
-        try:
-            return fn(brief)
-        except Exception:
-            pass
-    # Final fallback
+        try: return fn(brief)
+        except Exception: pass
     return _render_markdown_fallback(brief)
 
 # ---------- 5) Runner ----------
 def run_pipeline(q: str) -> Dict[str, Any]:
     state_in = {"query": q, "failure_count": 0}
-    callbacks = get_callbacks()  # [] if tracing disabled or misconfigured
+    callbacks = get_callbacks()  # [] if tracing disabled/misconfigured
     final_state = compiled.invoke(state_in, config={"callbacks": callbacks})
     return final_state.get("brief") or {}
 
-# ---------- 6) UI body ----------
+# ---------- 6) UI ----------
 st.title("Market Research Multiagent")
 st.caption("Query → Search → Analyze → Write → Markdown")
 
@@ -151,11 +141,9 @@ if run_btn:
             st.stop()
 
     md = render_markdown(brief)
-    # Persist artifacts
     (ARTIFACTS / "brief.md").write_text(md, encoding="utf-8")
     (ARTIFACTS / "sample_output.json").write_text(json.dumps(brief, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    # Left: Markdown + downloads
     with left:
         st.subheader("Brief (Markdown)")
         st.markdown(md)
@@ -163,9 +151,9 @@ if run_btn:
                            file_name="brief.md", mime="text/markdown", use_container_width=True)
         st.download_button("Download JSON",
                            data=json.dumps(brief, indent=2, ensure_ascii=False).encode("utf-8"),
-                           file_name="sample_output.json", mime="application/json", use_container_width=True)
+                           file_name="sample_output.json", mime="application/json",
+                           use_container_width=True)
 
-    # Right: sources & facts
     with right:
         st.subheader("Sources")
         srcs = brief.get("sources") or []
@@ -191,14 +179,9 @@ if run_btn:
         else:
             st.info("No extracted facts available.")
 else:
-    # Branded info bar when idle
-    message = "Enter a topic in the sidebar and click 𝗥𝘂𝗻 𝗿𝗲𝘀𝗲𝗮𝗿𝗰𝗵 to generate a brief."
+    msg = "Enter a topic in the sidebar and click **Run research** to generate a brief."
     st.markdown("""
-    <style>
-    .brand-info {
-      background:#3D155F; color:#ffffff; border:1px solid #2a0e43;
-      border-radius:8px; padding:12px 16px; font-size:0.95rem;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    st.markdown(f'<div class="brand-info">{message}</div>', unsafe_allow_html=True)
+    <style>.brand-info{background:#3D155F;color:#fff;border:1px solid #2a0e43;
+    border-radius:8px;padding:12px 16px;font-size:.95rem;}</style>""",
+                unsafe_allow_html=True)
+    st.markdown(f'<div class="brand-info">{msg}</div>', unsafe_allow_html=True)
