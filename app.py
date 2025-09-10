@@ -24,8 +24,7 @@ from src.observability import get_callbacks
 st.set_page_config(page_title="Market Research Multiagent", page_icon="📈", layout="wide")
 st.markdown("""
 <style>
-/* Override info message box color */
-div[data-testid="stInfo"] {
+div[data-testid="st.info"] {
     background-color: #3D155F;
     color: #ffffff;          /* white text for contrast */
     border: 1px solid #2a0e43;
@@ -162,6 +161,7 @@ if run_btn:
 
 else:
     st.info("Enter a topic in the sidebar and click **Run research** to generate a brief.")
+
 
 
 
