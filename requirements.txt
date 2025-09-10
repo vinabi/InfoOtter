@@ -7,9 +7,10 @@ beautifulsoup4==4.*
 lxml==5.*                  
 readability-lxml==0.8.*    
 markdownify==0.13.*        
-ddgs==0.1.*                
+duckduckgo-search==9.5.5              
 openai==0.27.*             
-pydantic==2.*             
+pydantic==2.*       
+ddgs==9.*
 python-dotenv==1.*         
 streamlit==1.*             
 pandas==2.*                
