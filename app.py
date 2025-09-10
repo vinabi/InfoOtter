@@ -17,6 +17,7 @@ def _load_secrets_into_env():
                     os.environ[str(kk)] = str(vv)
     except Exception:
         pass
+
 _load_secrets_into_env()
 
 # Ensure repo root is on sys.path for "src" package
@@ -28,8 +29,7 @@ if str(ROOT) not in sys.path:
 # compiled graph
 try:
     from src.graph import compiled
-except Exception as e:
-    # last-resort: dynamic import with path shim
+except Exception:
     import importlib
     compiled = importlib.import_module("src.graph").compiled  # may still raise
 
@@ -40,9 +40,10 @@ except Exception:
     # tiny fallback to avoid crash; very last resort
     import requests
     from html import unescape
+
     def url_to_markdown(url: str, timeout: int = 15) -> str:
         try:
-            r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=timeout)
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             r.raise_for_status()
             return unescape(r.text[:40000])
         except Exception:
@@ -63,23 +64,25 @@ def render_markdown_brief(brief: Dict[str, Any]) -> str:
         except Exception:
             pass
     # Local safe renderer
-    topic = brief.get("topic","")
-    summary = brief.get("summary","")
+    topic = brief.get("topic", "")
+    summary = brief.get("summary", "")
     facts = brief.get("key_facts") or []
     sources = brief.get("sources") or []
     lines = [f"# Market Brief: {topic}", "", summary, ""]
     if facts:
         lines.append("## Key Facts")
         for f in facts:
-            ev = f.get("evidence_url",""); conf = f.get("confidence", 0)
-            bullet = f"- {f.get('fact','')}"
-            lines.append(bullet)
-            if ev: lines.append(f"  Evidence: {ev} (confidence {conf:.2f})")
+            ev = f.get("evidence_url", "")
+            conf = f.get("confidence", 0)
+            lines.append(f"- {f.get('fact','')}")
+            if ev:
+                lines.append(f"  Evidence: {ev} (confidence {conf:.2f})")
         lines.append("")
     if sources:
         lines.append("## References")
         for i, s in enumerate(sources, 1):
-            title = s.get("title") or "Untitled"; url = s.get("url","")
+            title = s.get("title") or "Untitled"
+            url = s.get("url", "")
             pub = s.get("published_at") or ""
             lines.append(f"{i}. [{title}]({url}) {pub}")
         lines.append("")
@@ -91,19 +94,20 @@ def get_llm():
             return _get_llm_from_agents()
         except Exception:
             pass
+
     # Local stub / GROQ minimal
     class _Stub:
         def invoke(self, prompt: str):
-            class R: 
+            class R:
                 def __init__(self, text): self.content = text
             # naive condensation
             lines = [ln.strip() for ln in prompt.splitlines() if ln.strip()][:60]
             return R("\n".join(lines) + "\n\n(Stub summary)")
-    # Try Groq via langchain_groq if key present
+
     if os.getenv("GROQ_API_KEY"):
         try:
             from langchain_groq import ChatGroq
-            model = os.getenv("GROQ_MODEL","llama3-70b-8192")
+            model = os.getenv("GROQ_MODEL", "llama3-70b-8192")
             return ChatGroq(model_name=model, temperature=0.2)
         except Exception:
             pass
@@ -115,7 +119,8 @@ st.title("📈 Market Brief Agent")
 st.caption("Topic or URL → Search → Analyze → Write → Markdown")
 
 URL_RE = re.compile(r"^https?://", re.I)
-def is_url(s: str) -> bool: return bool(URL_RE.match((s or "").strip()))
+def is_url(s: str) -> bool:
+    return bool(URL_RE.match((s or "").strip()))
 
 def _safe_artifacts_dir() -> Path:
     # temp is writable on Streamlit Cloud
@@ -125,7 +130,6 @@ def _safe_artifacts_dir() -> Path:
 
 def _run_pipeline(query: str) -> Dict[str, Any]:
     state_in = {"query": query, "failure_count": 0}
-    # callbacks are optional; import inside to avoid import errors
     try:
         from src.observability import get_callbacks
         cfg = {"callbacks": get_callbacks()}
@@ -145,8 +149,10 @@ Structure:
 - Outlook (near-term)
 - Limitations (1–2 bullets)
 Return pure Markdown, no extra JSON.
+
 ### Source Sections
 {sections_md}
+
 ### Extracted Facts (JSON)
 {facts_json}
 """
@@ -155,19 +161,6 @@ Return pure Markdown, no extra JSON.
     except Exception:
         # Fallback: stitch sections so the body is never empty
         return f"# Market Brief: {query}\n\n{sections_md}\n"
-
-### Source Sections
-{sections_md}
-
-### Extracted Facts (JSON)
-{facts_json}
-
-Return pure Markdown, no extra JSON.
-"""
-    try:
-        return llm.invoke(prompt).content
-    except Exception:
-        return f"# Market Brief: {query}\n\n_Summarizer unavailable. See sections below._\n\n{sections_md}\n"
 
 def guarantee_full_markdown(query: str, brief: Dict[str, Any]) -> Dict[str, Any]:
     md = (brief.get("_markdown") or "").strip()
@@ -179,11 +172,13 @@ def guarantee_full_markdown(query: str, brief: Dict[str, Any]) -> Dict[str, Any]
         return {**brief, "_markdown": md}
 
     # Build sections from top sources
-    sections = []
-    live_sources = []
+    sections: List[str] = []
+    live_sources: List[Dict[str, Any]] = []
     for idx, s in enumerate(sources[:8], 1):
-        url = s.get("url"); title = s.get("title") or (url or f"Source {idx}")
-        if not url: continue
+        url = s.get("url")
+        title = s.get("title") or (url or f"Source {idx}")
+        if not url:
+            continue
         try:
             sec = url_to_markdown(url)
         except Exception:
@@ -232,9 +227,9 @@ with st.sidebar:
         max_sources = st.number_input("Max sources", 3, 30, int(os.getenv("MAX_SOURCES", "10")))
     with col2:
         min_non_empty = st.number_input("Min non-empty", 1, 20, int(os.getenv("MIN_NON_EMPTY_SOURCES", "5")))
-    llm_mode = st.selectbox("LLM mode", ["groq", "stub"], index=0 if os.getenv("LLM_MODE","groq").lower()=="groq" else 1)
-    tracing_on = st.toggle("LangSmith tracing", value=os.getenv("LANGSMITH_ENABLED","false").lower() in ("1","true","yes","on"))
-    http_timeout = st.slider("HTTP timeout (s)", 5, 60, int(os.getenv("HTTP_TIMEOUT","15")))
+    llm_mode = st.selectbox("LLM mode", ["groq", "stub"], index=0 if os.getenv("LLM_MODE", "groq").lower() == "groq" else 1)
+    tracing_on = st.toggle("LangSmith tracing", value=os.getenv("LANGSMITH_ENABLED", "false").lower() in ("1", "true", "yes", "on"))
+    http_timeout = st.slider("HTTP timeout (s)", 5, 60, int(os.getenv("HTTP_TIMEOUT", "15")))
     run_btn = st.button("▶️ Run", type="primary", use_container_width=True)
 
 # Mirror sidebar to env for backend tools
@@ -266,7 +261,7 @@ if run_btn:
             st.stop()
 
         brief = _inject_seed_url(q, brief)
-        brief = _guarantee_full_markdown(q, brief)
+        brief = guarantee_full_markdown(q, brief)
         status.update(label="Done ✅", state="complete")
 
     # Save artifacts in a Cloud-writable temp dir
@@ -285,7 +280,7 @@ if run_btn:
         st.subheader("Sources")
         srcs = brief.get("sources") or []
         if srcs:
-            df = pd.DataFrame([{"title": s.get("title",""), "url": s.get("url",""), "published_at": s.get("published_at","")} for s in srcs])
+            df = pd.DataFrame([{"title": s.get("title", ""), "url": s.get("url", ""), "published_at": s.get("published_at", "")} for s in srcs])
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             st.info("No sources found.")
@@ -293,7 +288,7 @@ if run_btn:
         st.subheader("Facts")
         facts = brief.get("key_facts") or []
         if facts:
-            df_f = pd.DataFrame([{"fact": f.get("fact",""), "evidence_url": f.get("evidence_url",""), "confidence": f.get("confidence", 0.0)} for f in facts])
+            df_f = pd.DataFrame([{"fact": f.get("fact", ""), "evidence_url": f.get("evidence_url", ""), "confidence": f.get("confidence", 0.0)} for f in facts])
             st.dataframe(df_f, use_container_width=True, hide_index=True)
         else:
             st.info("No extracted facts available.")
