@@ -2,6 +2,7 @@ langgraph
 langsmith
 langchain-groq
 langchain-core
+
 requests
 readability-lxml
 beautifulsoup4
@@ -10,8 +11,9 @@ pydantic
 duckduckgo-search
 openai
 markdownify
+
 streamlit
 pandas
 python-dotenv
-tavily
-ddgs
+
+tavily-python
