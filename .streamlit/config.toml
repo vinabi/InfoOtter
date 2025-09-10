@@ -1,9 +1,9 @@
 [theme]
-# Deep navy app background
-backgroundColor = "#FFF4E4"
-# Slightly lighter navy for containers/sidebar
-secondaryBackgroundColor = "#B1AA81"
-# Brand accent (coral/red)
+# app background
+backgroundColor = "#FFFFFF"
+# for containers/sidebar
+secondaryBackgroundColor = "#c6cedbff"
+# Brand accent 
 primaryColor = "#0274BD"
 # Body text (off-white for contrast)
 textColor = "#000000"
