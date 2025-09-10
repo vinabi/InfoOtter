@@ -135,15 +135,26 @@ def _run_pipeline(query: str) -> Dict[str, Any]:
     return out.get("brief") or {}
 
 def _llm_summarize_from_sections(query: str, sections_md: str, facts_json: str) -> str:
-    llm = get_llm()
+    llm = get_llm()  # uses Groq if GROQ_API_KEY in secrets; else stub
     prompt = f"""
-Create a decision-ready market brief on **{query}** using ONLY the material in the sections below.
+Create a detailed market brief on **{query}** using ONLY the material in the sections below.
 Structure:
-- Executive Summary (≤ 6 sentences)
+- Executive Summary (≤ 8 sentences)
 - Key Insights (bullets, include inline [#] citations)
 - Competitive / Ecosystem Snapshot
 - Outlook (near-term)
-- References (numbered at end — do NOT invent links)
+- Limitations (1–2 bullets)
+Return pure Markdown, no extra JSON.
+### Source Sections
+{sections_md}
+### Extracted Facts (JSON)
+{facts_json}
+"""
+    try:
+        return llm.invoke(prompt).content
+    except Exception:
+        # Fallback: stitch sections so the body is never empty
+        return f"# Market Brief: {query}\n\n{sections_md}\n"
 
 ### Source Sections
 {sections_md}
@@ -158,33 +169,41 @@ Return pure Markdown, no extra JSON.
     except Exception:
         return f"# Market Brief: {query}\n\n_Summarizer unavailable. See sections below._\n\n{sections_md}\n"
 
-def _guarantee_full_markdown(query: str, brief: Dict[str, Any]) -> Dict[str, Any]:
+def guarantee_full_markdown(query: str, brief: Dict[str, Any]) -> Dict[str, Any]:
     md = (brief.get("_markdown") or "").strip()
     sources = brief.get("sources") or []
     facts = brief.get("key_facts") or []
-    if md and len(md) >= 800 and ("## References" in md or "### References" in md):
+
+    # If it already looks substantive, keep it
+    if md and len(md) >= 800 and "References" in md:
         return {**brief, "_markdown": md}
 
-    # build sections from live URLs
-    sections, live_sources = [], []
-    for idx, s in enumerate(sources[:10], 1):
+    # Build sections from top sources
+    sections = []
+    live_sources = []
+    for idx, s in enumerate(sources[:8], 1):
         url = s.get("url"); title = s.get("title") or (url or f"Source {idx}")
         if not url: continue
         try:
             sec = url_to_markdown(url)
         except Exception:
             sec = ""
-        sec = "\n".join(sec.splitlines()[:160])
+        # keep enough context to write real summaries
+        sec = "\n".join(sec.splitlines()[:220])
         sections.append(f"#### [{idx}] {title}\n{sec}\n")
         live_sources.append({"title": title, "url": url, "published_at": s.get("published_at")})
+
+    # If nothing fetched, render minimal
     if not sections:
-        # nothing to expand; render minimal but valid
         return {**brief, "_markdown": render_markdown_brief(brief)}
 
-    import json as _json
     sections_md = "\n\n---\n\n".join(sections)
-    facts_json = _json.dumps(facts, ensure_ascii=False, indent=2)
+    facts_json = json.dumps(facts, ensure_ascii=False, indent=2)
+
+    # Always synthesize a full report (don’t rely on earlier writer output)
     draft = _llm_summarize_from_sections(query, sections_md, facts_json)
+
+    # Add numbered references
     refs = "\n".join([f"{i}. [{s['title']}]({s['url']})" for i, s in enumerate(live_sources, 1)])
     md_final = f"{draft}\n\n## References\n{refs}\n"
     return {**brief, "sources": live_sources or sources, "_markdown": md_final}
