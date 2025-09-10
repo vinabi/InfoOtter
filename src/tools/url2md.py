@@ -62,3 +62,9 @@ def url_to_markdown(url: str, timeout: int = None) -> str:
         return unescape(html)
     except Exception:
         return f"# Unable to convert\n\nFailed to fetch/convert: {url}\n"
+        
+    resp = requests.get(url, headers={"User-Agent":"Mozilla/5.0 (MarketBriefBot/1.0)"}, timeout=timeout or HTTP_TIMEOUT)
+    resp.raise_for_status()
+    html = resp.text
+    if _to_md: return _to_md(html, heading_style="ATX")
+
