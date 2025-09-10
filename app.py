@@ -24,8 +24,81 @@ from src.observability import get_callbacks
 
 # ---------- UI ----------
 st.set_page_config(page_title="Market Brief Agent", page_icon="📈", layout="wide")
+BRAND_COLORS = {
+    "navy":   "#13184A",
+    "navy2":  "#1B2163",
+    "coral":  "#FF584D",
+    "amber":  "#F9B234",
+    "ink":    "#F3F6FF",
+    "muted":  "#A7B0D9",
+}
 
-st.title("📈 Market Brief Agent")
+st.markdown(f"""
+<style>
+/* App background + font smoothing */
+.stApp {{
+  background: {BRAND_COLORS["navy"]};
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}}
+
+/* Sidebar panel */
+[data-testid="stSidebar"] {{
+  background: {BRAND_COLORS["navy2"]};
+  border-right: 1px solid rgba(255,255,255,0.06);
+}}
+
+/* Headers / captions */
+h1, h2, h3, h4, h5, h6 {{
+  color: {BRAND_COLORS["ink"]};
+  letter-spacing: .2px;
+}}
+.block-container > div:first-child h1 {{
+  margin-bottom: .2rem;
+}}
+
+/* Buttons */
+.stButton>button {{
+  background: {BRAND_COLORS["coral"]};
+  color: white;
+  border: 0;
+  border-radius: 14px;
+  padding: .6rem 1rem;
+  font-weight: 700;
+  box-shadow: 0 6px 18px rgba(255, 88, 77, .25);
+}}
+.stButton>button:hover {{ filter: brightness(1.05); }}
+
+/* Metric chips / tags */
+.kpi {{
+  display:inline-block; padding:.35rem .6rem; border-radius:999px;
+  background:{BRAND_COLORS["amber"]}; color:#3b2800; font-weight:700;
+}}
+
+/* Cards feel like your mock: white card on navy with rounded corners */
+.card {{
+  background: #ffffff;
+  color: #0f122b;
+  border-radius: 16px;
+  padding: 1rem 1.2rem;
+  box-shadow: 0 8px 22px rgba(0,0,0,.18);
+  border: 1px solid rgba(0,0,0,.06);
+}}
+.card h4 {{ margin:0 0 .35rem 0; }}
+
+/* DataFrame tweaks */
+[data-testid="stDataFrame"] div[data-testid="stTable"] {{
+  border-radius: 12px;
+  overflow:hidden;
+  border: 1px solid rgba(255,255,255,.08);
+}}
+/* Links use coral; hover to amber */
+a, a:visited {{ color: {BRAND_COLORS["coral"]}; }}
+a:hover {{ color: {BRAND_COLORS["amber"]}; }}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("Market Researcher")
 st.caption("Query → Search → Analyze → Write → Markdown")
 
 # Sidebar controls
@@ -153,4 +226,5 @@ if run_btn:
 
 else:
     st.info("Enter a topic in the sidebar and click **Run research** to generate a brief.")
+
 
