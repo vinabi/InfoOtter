@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parent
 ARTIFACTS = ROOT / "artifacts"
 ARTIFACTS.mkdir(parents=True, exist_ok=True)
 
-from src.graph import compiled
 from src.agents import render_markdown_brief, get_llm 
+from src.graph import compiled
 from src.observability import get_callbacks
 
 # ---------- UI ----------
