@@ -1,7 +1,7 @@
-# app.py — ultra-thin wrapper around your existing multi-agent graph
+# app.py — thin Streamlit shell around your multi-agent graph
 import os, sys, json, tempfile
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pandas as pd
 import streamlit as st
@@ -24,14 +24,28 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Require your actual code — if this fails, we want to see it
-from src.graph import compiled
+# ------------------------- Import your pipeline & helpers ---------------------
+from src.graph import compiled  # your LangGraph
 try:
     from src.observability import get_callbacks
 except Exception:
     def get_callbacks(): return []
 
-# ------------------------- Local fallback renderer ----------------------------
+# Writer + LLM from your project (used only if compiled brief lacks _markdown)
+try:
+    from src.agents import run_writer, get_llm
+    HAVE_WRITER = True
+except Exception:
+    HAVE_WRITER = False
+    def get_llm():
+        class _Stub:
+            def invoke(self, prompt: str):
+                class R: 
+                    def __init__(self, text): self.content = text
+                return R(prompt[:4000] + "\n\n(Stub summary)")
+        return _Stub()
+
+# ------------------------- Local fallback renderer (last resort) -------------
 def render_markdown_brief(brief: Dict[str, Any]) -> str:
     topic = brief.get("topic", "")
     summary = brief.get("summary", "")
@@ -57,10 +71,14 @@ def render_markdown_brief(brief: Dict[str, Any]) -> str:
         lines.append("")
     return "\n".join(lines)
 
+def is_substantive(md: str) -> bool:
+    md = (md or "").strip()
+    return bool(md and len(md) >= 800 and "References" in md)
+
 # ------------------------- Streamlit UI --------------------------------------
 st.set_page_config(page_title="Market Brief Agent", page_icon="📈", layout="wide")
 st.title("📈 Market Brief Agent")
-st.caption("Runs your original multi-agent chain exactly as in local.")
+st.caption("Runs your original multi-agent chain; if needed, re-invokes your writer to produce full Markdown.")
 
 with st.sidebar:
     st.header("Settings")
@@ -79,7 +97,7 @@ with st.sidebar:
     tracing = st.toggle("LangSmith tracing", value=os.getenv("LANGSMITH_ENABLED","false").lower() in ("1","true","yes","on"))
     run_btn = st.button("▶️ Run", type="primary", use_container_width=True)
 
-# Mirror sidebar to env so your existing nodes/tools read them
+# Mirror sidebar → env so your nodes/tools read them
 os.environ["MAX_SOURCES"] = str(max_sources)
 os.environ["MIN_NON_EMPTY_SOURCES"] = str(min_non_empty)
 os.environ["HTTP_TIMEOUT"] = str(http_timeout)
@@ -100,24 +118,49 @@ if run_btn:
         st.stop()
 
     with st.status("Running your pipeline…", expanded=True) as status:
+        status.write("• Invoking compiled LangGraph")
         state_in: Dict[str, Any] = {"query": q, "failure_count": 0}
         try:
             final = compiled.invoke(state_in, config={"callbacks": get_callbacks()})
             brief = (final or {}).get("brief") or {}
-            status.update(label="Done ✅", state="complete")
         except Exception as e:
             status.update(label="Error ❌", state="error")
             st.exception(e)
             st.stop()
 
-    md = (brief.get("_markdown") or "").strip()
-    if not md:
-        md = render_markdown_brief(brief)
+        md = (brief.get("_markdown") or "").strip()
 
+        # If your graph returned no/short markdown, call your writer directly
+        if not is_substantive(md) and HAVE_WRITER:
+            status.write("• Rewriting with project writer (using existing facts & sources)")
+            try:
+                llm = get_llm()
+                facts = brief.get("key_facts") or []
+                sources = brief.get("sources") or []
+                # Only call writer if we have at least one source or fact
+                if sources or facts:
+                    regenerated = run_writer(llm, q, facts, sources)  # returns dict with _markdown, sources, etc.
+                    # Merge: prefer regenerated fields when present
+                    if isinstance(regenerated, dict):
+                        brief.update({k: v for k, v in regenerated.items() if v})
+                        md = (brief.get("_markdown") or "").strip()
+                else:
+                    st.warning("No sources/facts from graph; cannot call writer. Showing minimal view.")
+            except Exception as werr:
+                st.warning(f"Writer fallback failed: {type(werr).__name__}")
+
+        # If still nothing, render a minimal markdown so UI never empties
+        if not md:
+            md = render_markdown_brief(brief)
+
+        status.update(label="Done ✅", state="complete")
+
+    # Persist to Cloud-writable temp dir
     outdir = _artifacts_dir()
     (outdir / "brief.md").write_text(md, encoding="utf-8")
     (outdir / "sample_output.json").write_text(json.dumps(brief, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    # Display Markdown
     with left:
         st.subheader("Brief (Markdown)")
         st.markdown(md)
@@ -125,12 +168,15 @@ if run_btn:
         st.download_button("💾 Download JSON", json.dumps(brief, indent=2, ensure_ascii=False).encode("utf-8"),
                            "sample_output.json", "application/json", use_container_width=True)
 
+    # Display Sources & Facts as produced by your pipeline (or writer)
     with right:
         st.subheader("Sources")
         srcs = brief.get("sources") or []
         if srcs:
             df = pd.DataFrame([{
-                "title": s.get("title",""), "url": s.get("url",""), "published_at": s.get("published_at","")
+                "title": s.get("title",""),
+                "url": s.get("url",""),
+                "published_at": s.get("published_at","")
             } for s in srcs])
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
@@ -140,7 +186,9 @@ if run_btn:
         facts = brief.get("key_facts") or []
         if facts:
             df_f = pd.DataFrame([{
-                "fact": f.get("fact",""), "evidence_url": f.get("evidence_url",""), "confidence": f.get("confidence", 0.0)
+                "fact": f.get("fact",""),
+                "evidence_url": f.get("evidence_url",""),
+                "confidence": f.get("confidence", 0.0)
             } for f in facts])
             st.dataframe(df_f, use_container_width=True, hide_index=True)
         else:
