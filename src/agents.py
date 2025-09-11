@@ -272,7 +272,7 @@ def run_writer(llm, query: str, facts: List[Dict], sources: List[Dict]) -> Dict:
         try:
             draft = llm.invoke(_writer_prompt(query, source_sections_md, facts_json)).content
         except Exception:
-            draft = "Summary unavailable; see references below."
+            draft = ""
 
         refs = "\n".join([f"{i}. [{s['title']}]({s['url']})" for i, s in enumerate(live_sources, 1)])
         md_final = f"{draft}\n\n## References\n{refs}\n"
