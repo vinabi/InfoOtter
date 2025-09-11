@@ -271,4 +271,4 @@ If you hit an edge case, grab the **JSON** from the download button, open a bug,
 *   console logs / screenshots.
 -------------
 
-# *** If you made it this far, you’re definitely not leaving without giving a star 🎀  ***
+# ***If you made it this far, you’re definitely not leaving without giving a star 🎀***
