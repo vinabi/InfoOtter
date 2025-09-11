@@ -127,7 +127,7 @@ def newsapi_search(query: str, max_results: int = 10) -> List[Dict]:
 
 def ddg_api_search(query: str, max_results: int = 10) -> List[Dict]:
     try:
-        from duckduckgo_search import DDGS
+        from ddgs  import DDGS
     except Exception:
         return []
     try:
