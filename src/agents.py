@@ -134,7 +134,7 @@ def _append_reference_summaries(md: str, llm, max_points: int = 5) -> str:
     return md.rstrip() + "\n\n" + "\n".join(sections) + "\n"
 
 LLM_MODE   = os.getenv("LLM_MODE", "groq").lower()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 class StubLLM:
     def invoke(self, prompt: str):
