@@ -2,7 +2,7 @@ import os, json
 from pprint import pprint
 from langgraph.graph import StateGraph, START, END
 from .state import GraphState
-from .agents import get_llm, run_researcher, run_analyst, run_writer
+from .agents import get_llm, run_researcher, run_analyst, run_writer, render_markdown_brief
 from .tools.search import aggregate_search, enrich_with_content
 from .observability import trace, get_callbacks
 
@@ -64,7 +64,6 @@ graph.add_edge("writer", "reviewer")
 graph.add_edge("reviewer", END)
 
 compiled = graph.compile()
-__all__ = ["compiled"]
 
 def main(topic: str | None = None):
     q = topic or input("Enter the topic for market research: ").strip()
