@@ -3,7 +3,7 @@ InfoOtter – Market Research Multi-Agent
 
 **InfoOtter – Market Research Multi-Agent** is a robust research automation system that combines **LangGraph multi-agent orchestration**, resilient **search and extraction pipelines**, and a **Streamlit interface** to deliver decision-ready market briefs. It is designed to take either a **topic** or a **URL** as input and return a **comprehensive, citation-rich Markdown report** with supporting JSON data.
 
-# **InfoOtter** app here:  
+### **InfoOtter** app here:  
 [https://infootter.streamlit.app/](https://infootter.streamlit.app/)
 
 At its core, InfoOtter employs a multi-stage workflow:
