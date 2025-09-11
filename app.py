@@ -3,7 +3,9 @@ import os
 import json
 from pathlib import Path
 from typing import Any, Dict, List
-
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent / "src"))
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
