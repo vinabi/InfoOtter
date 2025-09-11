@@ -1,7 +1,36 @@
 InfoOtter – Market Research Multi-Agent
 =======================================
 
-Query → Search → Analyze → Write → **Cited Markdown brief**.Runs locally (CLI + Streamlit) and on Streamlit Cloud with robust network/API fallbacks.
+**InfoOtter – Market Research Multi-Agent** is a robust research automation system that combines **LangGraph multi-agent orchestration**, resilient **search and extraction pipelines**, and a **Streamlit interface** to deliver decision-ready market briefs. It is designed to take either a **topic** or a **URL** as input and return a **comprehensive, citation-rich Markdown report** with supporting JSON data.
+
+# **InfoOtter** app here:  
+[https://infootter.streamlit.app/](https://infootter.streamlit.app/)
+
+At its core, InfoOtter employs a multi-stage workflow:
+
+- **Researcher Agent** performs web searches using DuckDuckGo (`ddgs`) and Wikipedia fallbacks to collect a wide range of sources.  
+- **Extraction Pipeline** converts URLs to structured Markdown using a cascade of tools:  
+  1. RapidAPI `url-to-markdown` (when API key is available),  
+  2. Tavily Extract API (optional),  
+  3. **Jina Reader** (open-source, no key required),  
+  4. Local `readability-lxml` + `markdownify` as the final safety net.  
+- **Analyst Agent** parses the extracted documents to identify **key facts**, attaching confidence scores and evidence URLs.  
+- **Writer Agent** synthesizes all of this into a cohesive report, with inline `[n]` citations tied directly to a **numbered References section**.
+
+---
+
+### Main Interface
+A clean and simple Streamlit UI where users can input a topic or URL, configure settings, and launch the multi-agent research pipeline.  
+![App Home](src/app_home.png)
+
+### Generated Report
+The core output: a structured, citation-rich Markdown brief with key facts, references, and downloadable artifacts.  
+![Report Output](src/app_report.png)
+
+### Reference Summaries
+An additional section that provides concise, per-source bullet point summaries, making it easy to scan insights from each reference.  
+![Reference Summaries](src/app_summaries.png)
+
 
 Features
 --------------
