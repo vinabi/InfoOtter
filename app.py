@@ -63,9 +63,9 @@ def render_markdown_brief(brief: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 # ------------------------- Streamlit UI --------------------------------------
-st.set_page_config(page_title="Market Brief Agent", page_icon="📈", layout="wide")
-st.title("📈 Market Brief Agent")
-st.caption("Runs your chain, then fetches all URLs via Jina Reader to guarantee full content.")
+st.set_page_config(page_title="Market Research Multiagent", page_icon="📈", layout="wide")
+st.title("Market Research Multiagent")
+st.caption("Query → Search → Analyze → Write → Markdown")
 
 with st.sidebar:
     st.header("Settings")
@@ -130,7 +130,7 @@ if run_btn:
         if not md:
             md = render_markdown_brief(brief)
 
-        status.update(label="Done ✅", state="complete")
+        status.update(label="Done", state="complete")
 
     # Save artifacts
     outdir = _artifacts_dir()
@@ -141,8 +141,8 @@ if run_btn:
     with left:
         st.subheader("Brief (Markdown)")
         st.markdown(md)
-        st.download_button("💾 Download Markdown", md.encode("utf-8"), "brief.md", "text/markdown", use_container_width=True)
-        st.download_button("💾 Download JSON", json.dumps(brief, indent=2, ensure_ascii=False).encode("utf-8"),
+        st.download_button("Download Markdown", md.encode("utf-8"), "brief.md", "text/markdown", use_container_width=True)
+        st.download_button("Download JSON", json.dumps(brief, indent=2, ensure_ascii=False).encode("utf-8"),
                            "sample_output.json", "application/json", use_container_width=True)
 
     with right:
@@ -166,4 +166,18 @@ if run_btn:
             st.info("No extracted facts available.")
 
 else:
-    st.info("Enter a topic or a URL in the sidebar and click **Run**.")
+    message = "Enter a topic in the sidebar and click 𝗥𝘂𝗻 𝗿𝗲𝘀𝗲𝗮𝗿𝗰𝗵 to generate a brief."
+    st.markdown("""
+    <style>
+    .brand-info {
+      background:#3D155F;
+      color:#ffffff;
+      border:1px solid #2a0e43;
+      border-radius:8px;
+      padding:12px 16px;
+      font-size:0.95rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f'<div class="brand-info">{message}</div>', unsafe_allow_html=True)
