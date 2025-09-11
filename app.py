@@ -1,325 +1,174 @@
-# app.py — URL → Report (Streamlit + Jina Reader + optional Groq LLM)
+# app.py  — replace everything
 import os
-import re
-import math
 import json
-import time
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict
 
-import requests
-from bs4 import BeautifulSoup
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+from importlib import reload
 
-# ----------------------------- Setup ---------------------------------
-load_dotenv(override=False)
+# --- 0) Load config EARLY (fixes Cloud "refs-only" brief) ---
+load_dotenv(override=False)                       # local dev
+if hasattr(st, "secrets"):                        # Streamlit Cloud
+    for k, v in st.secrets.items():
+        os.environ[str(k)] = str(v)
 
-st.set_page_config(page_title="URL → Report", page_icon="🧩", layout="wide")
+# --- 1) Page + styling ---
+st.set_page_config(page_title="Market Research Multiagent", page_icon="📈", layout="wide")
+st.markdown("""
+<style>
+div[data-testid="stAlert"], div[role="alert"], div.stAlert{
+  background:#3D155F!important;color:#fff!important;border:1px solid #2a0e43!important;border-radius:8px!important;
+}
+div[data-testid="stAlert"] *,div[role="alert"] *{color:#fff!important;fill:#fff!important;}
+</style>
+""", unsafe_allow_html=True)
 
-st.markdown(
-    """
-    <style>
-      .callout {background:#3D155F; color:#fff; border:1px solid #2a0e43; border-radius:10px; padding:12px 14px;}
-      .muted {opacity:.85}
-      code, pre {white-space: pre-wrap !important;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.title("Market Research Multiagent")
+st.caption("Query → Search → Analyze → Write → Markdown")
 
 ROOT = Path(__file__).resolve().parent
 ARTIFACTS = ROOT / "artifacts"
 ARTIFACTS.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
+# --- 2) Sidebar FIRST (so env reflects user choices) ---
+with st.sidebar:
+    st.header("Settings")
+    default_topic = os.getenv("QUERY", "").strip().strip('"') or "agent-to-agent (A2A) and Model Context Protocol (MCP)"
+    topic = st.text_area("Research topic", value=default_topic, height=90)
 
-# ------------------------ Utility Functions --------------------------
-URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
-SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
-WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9']+")
-STOPWORDS = {
-    "the","a","an","and","or","but","if","then","else","when","while","of","to","in","on","for","with",
-    "as","by","from","at","is","it","this","that","these","those","be","been","are","was","were","will",
-    "can","may","might","should","would","could","we","you","they","he","she","i","me","my","our","your",
-    "their","them","his","her","its","about","into","over","under","between","within","per","via","not",
-}
+    c1, c2 = st.columns(2)
+    max_sources    = c1.number_input("Max sources", 3, 30, int(os.getenv("MAX_SOURCES", "10")), 1)
+    min_non_empty  = c2.number_input("Min non-empty", 1, 20, int(os.getenv("MIN_NON_EMPTY_SOURCES", "5")), 1)
 
-def extract_urls(block: str) -> List[str]:
-    seen, out = set(), []
-    for m in URL_RE.finditer(block or ""):
-        u = m.group(0).strip().rstrip(".,);]")
-        if u not in seen:
-            seen.add(u); out.append(u)
-    return out
+    llm_mode  = st.selectbox("LLM mode", ["groq", "stub"],
+                             index=0 if os.getenv("LLM_MODE","groq").lower()=="groq" else 1)
+    tracing_on = st.toggle("Enable LangSmith tracing",
+                           value=os.getenv("LANGSMITH_ENABLED","false").lower() in ("1","true","yes","on"))
+    allow_stubs = st.toggle("Allow offline stubs when search fails",
+                            value=os.getenv("ALLOW_STUBS","false").lower() in ("1","true","yes","on"))
+    http_timeout = st.slider("HTTP timeout (s)", 5, 60, int(os.getenv("HTTP_TIMEOUT","15")))
+    run_btn = st.button("Run research", type="primary", use_container_width=True)
 
-# ---------- Fetch via Jina Reader (Markdown-like) ----------
-def fetch_via_jina(url: str, timeout: int = 20) -> Tuple[str, str]:
-    api = f"https://r.jina.ai/http://{url.split('://',1)[-1]}"
-    r = requests.get(api, timeout=timeout)
-    r.raise_for_status()
-    md = r.text
-    # crude title guess = first markdown heading or the URL
-    title = url
-    for line in md.splitlines():
-        if line.startswith("#"):
-            title = line.lstrip("# ").strip() or url
-            break
-    return title, md
+# Apply sidebar → env (so imports see correct config)
+os.environ.update({
+    "MAX_SOURCES": str(max_sources),
+    "MIN_NON_EMPTY_SOURCES": str(min_non_empty),
+    "LLM_MODE": llm_mode,
+    "LANGSMITH_ENABLED": "true" if tracing_on else "false",
+    "ALLOW_STUBS": "true" if allow_stubs else "false",
+    "HTTP_TIMEOUT": str(http_timeout),
+})
 
-# ---------- Local HTML → text (fallback) ----------
-def fetch_html(url: str, timeout: int = 15, max_bytes: int = 5_000_000) -> Tuple[str, str]:
-    headers = {"User-Agent": DEFAULT_USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
-    r = requests.get(url, headers=headers, timeout=timeout)
-    r.raise_for_status()
-    content = r.content[:max_bytes]
-    soup = BeautifulSoup(content, "html.parser")
-    for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "form", "aside"]):
-        tag.decompose()
-    title = ""
-    if soup.title and soup.title.string:
-        title = soup.title.string.strip()
-    if not title:
-        og = soup.find("meta", attrs={"property": "og:title"})
-        if og and og.get("content"):
-            title = og["content"].strip()
-    text = " ".join(t.strip() for t in soup.stripped_strings)
-    return (title or url, text)
+# --- 3) Import pipeline AFTER env is ready; reload to pick up changes ---
+import src.agents as agents
+import src.graph as graph
+import src.observability as observability
+reload(agents); reload(graph); reload(observability)
 
-# ---------------------- Summarization Engines ------------------------
-def split_sentences(text: str) -> List[str]:
-    text = (text or "").replace("\n", " ")
-    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+compiled = graph.compiled
+get_callbacks = observability.get_callbacks
 
-def score_sentences(text: str) -> List[Tuple[float, str]]:
-    sentences = split_sentences(text)
-    if not sentences: return []
-    freqs: Dict[str, float] = {}
-    for s in sentences:
-        for w in WORD_RE.findall(s.lower()):
-            if w in STOPWORDS or len(w) <= 2: continue
-            freqs[w] = freqs.get(w, 0) + 1.0
-    if freqs:
-        maxf = max(freqs.values())
-        for k in list(freqs.keys()):
-            freqs[k] /= maxf
-    scored: List[Tuple[float, str]] = []
-    for s in sentences:
-        score = 0.0
-        for w in WORD_RE.findall(s.lower()):
-            score += freqs.get(w, 0.0)
-        n_words = max(1, len(WORD_RE.findall(s)))
-        length_penalty = 0.8 if (n_words < 8 or n_words > 40) else 1.0
-        scored.append((score * length_penalty, s))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return scored
-
-def summarize_extractive(text: str, max_sentences: int = 5) -> List[str]:
-    ranked = score_sentences(text)
-    if not ranked: return []
-    top = {s for _, s in ranked[: max(1, max_sentences * 2)]}
-    sentences = split_sentences(text)
-    kept: List[str] = []
-    for s in sentences:
-        if s in top: kept.append(s)
-        if len(kept) >= max_sentences: break
-    return kept
-
-# ---------- Optional Groq LLM summarizer ----------
-GROQ_KEY = os.getenv("GROQ_API_KEY")
-try:
-    if GROQ_KEY:
-        from langchain_groq import ChatGroq  # lightweight LC wrapper
-        _groq = ChatGroq(model_name=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile"), temperature=0.2)
-        LLM_AVAILABLE = True
-    else:
-        _groq = None
-        LLM_AVAILABLE = False
-except Exception:
-    _groq = None
-    LLM_AVAILABLE = False
-
-def summarize_with_groq(text: str, max_points: int = 5) -> List[str]:
-    if not LLM_AVAILABLE or not _groq:
-        return summarize_extractive(text, max_points)
-    prompt = (
-        "Summarize the following webpage content into concise bullet points "
-        f"(max {max_points}). Focus on key facts, claims, metrics, guidance.\n\n"
-        "TEXT:\n" + text[:120000]
-    )
-    try:
-        resp = _groq.invoke(prompt)
-        msg = getattr(resp, "content", "") or ""
-        bullets = [re.sub(r"^[\\-\\d\\.\\)\\s]+", "", ln).strip() for ln in msg.splitlines() if ln.strip()]
-        return [b for b in bullets if b][:max_points]
-    except Exception:
-        return summarize_extractive(text, max_points)
-
-# --------------------------- Reporting -------------------------------
-def build_markdown_report(topic: str, items: List[Dict], cite: bool = True) -> str:
-    lines: List[str] = []
-    lines.append(f"# Report: {topic or 'Collected URLs'}\n")
-
-    pooled: List[Tuple[float, str, int]] = []
-    for idx, it in enumerate(items):
-        for s, sc in it.get("scored", [])[:6]:
-            pooled.append((sc, s, idx))
-    pooled.sort(key=lambda x: x[0], reverse=True)
-    exec_pts, seen = [], set()
-    for _, s, _ in pooled:
-        if s.lower() in seen: continue
-        exec_pts.append(s); seen.add(s.lower())
-        if len(exec_pts) >= 6: break
-
-    if exec_pts:
-        lines.append("## Executive Summary")
-        for s in exec_pts: lines.append(f"- {s}")
+# --- 4) Safe renderer: use writer’s markdown, else fallback ---
+def _render_markdown_fallback(brief: Dict) -> str:
+    lines = [f"# Market Brief: {brief.get('topic','')}", ""]
+    if brief.get("summary"): lines += [brief["summary"], ""]
+    if brief.get("key_facts"):
+        lines.append("## Key Facts")
+        for f in brief["key_facts"]:
+            ev = f.get("evidence_url","")
+            lines.append(f"- {f.get('fact','')}")
+            if ev: lines.append(f"  Evidence: {ev} (confidence {f.get('confidence',0):.2f})")
         lines.append("")
-
-    for i, it in enumerate(items, 1):
-        title = it.get("title") or f"Source {i}"
-        url = it.get("url") or ""
-        lines.append(f"## {title}")
-        if url: lines.append(f"Source: {url}")
-        bullets = it.get("bullets") or []
-        if bullets:
-            for b in bullets: lines.append(f"- {b}")
-        else:
-            lines.append("- (No content extracted)")
-        lines.append("")
-
-    if cite:
+    srcs = brief.get("sources") or []
+    if srcs:
         lines.append("## References")
-        for i, it in enumerate(items, 1):
-            u = it.get("url", "")
-            t = (it.get("title") or u or f"Source {i}").strip()
-            lines.append(f"{i}. [{t}]({u})")
+        for i, s in enumerate(srcs, 1):
+            title = s.get("title") or "Untitled"
+            url = s.get("url","")
+            pub = s.get("published_at") or ""
+            lines.append(f"{i}. [{title}]({url}) {pub}")
         lines.append("")
     return "\n".join(lines)
 
-# ---------------------------- UI ------------------------------------
-with st.sidebar:
-    st.header("Settings")
-    use_jina = st.toggle("Use Jina Reader (no key)", value=True, help="Reads pages as Markdown via r.jina.ai")
-    use_llm = st.toggle("Use Groq summarizer", value=bool(GROQ_KEY), help="Needs GROQ_API_KEY in secrets/env")
-    max_points = st.slider("Bullets per source", 3, 10, 5)
-    timeout = st.slider("HTTP timeout (s)", 5, 45, int(os.getenv("HTTP_TIMEOUT", "20")))
-    cite = st.toggle("Include references section", value=True)
+def render_markdown(brief: Dict) -> str:
+    md = brief.get("_markdown")
+    if md: return md
+    fn = getattr(agents, "render_markdown_brief", None)
+    if callable(fn):
+        try: return fn(brief)
+        except Exception: pass
+    return _render_markdown_fallback(brief)
 
-st.title("URL → Report")
-st.caption("Paste URLs or upload a file. I’ll fetch each page (Jina or HTML), summarize (Groq or extractive), then compile a Markdown report.")
+# --- 5) Runner ---
+def run_pipeline(q: str) -> Dict[str, Any]:
+    state_in = {"query": q, "failure_count": 0}
+    callbacks = get_callbacks()  # [] if tracing disabled/missing
+    out = compiled.invoke(state_in, config={"callbacks": callbacks})
+    return out.get("brief") or {}
 
+# --- 6) UI body ---
 left, right = st.columns([2, 1])
 
-with left:
-    url_text = st.text_area("Paste URLs or any text containing them", value=os.getenv("URLS", ""), height=160,
-                            placeholder="One per line, or paste any text—I’ll auto-extract links…")
-    uploaded = st.file_uploader("…or upload a .txt / .csv / .json file of URLs", type=["txt", "csv", "json"], accept_multiple_files=False)
+if run_btn:
+    if not topic.strip():
+        st.error("Please enter a topic to research."); st.stop()
 
-    urls: List[str] = []
-    if uploaded is not None:
+    with st.status("Running research pipeline…", expanded=True) as status:
+        st.write("• Searching & collecting sources")
+        st.write("• Extracting facts")
+        st.write("• Writing the brief")
         try:
-            name = uploaded.name.lower()
-            data = uploaded.read()
-            if name.endswith(".txt"):
-                urls = extract_urls(data.decode("utf-8", "ignore"))
-            elif name.endswith(".csv"):
-                df = pd.read_csv(uploaded)
-                for col in df.columns:
-                    vals = [str(v) for v in df[col].dropna().tolist()]
-                    if any(v.startswith("http") for v in vals):
-                        urls = [v for v in vals if v.startswith("http")]
-                        break
-            elif name.endswith(".json"):
-                try:
-                    obj = json.loads(data.decode("utf-8", "ignore"))
-                except Exception:
-                    obj = []
-                if isinstance(obj, dict) and "urls" in obj and isinstance(obj["urls"], list):
-                    urls = [str(u) for u in obj["urls"] if isinstance(u, str)]
-                elif isinstance(obj, list):
-                    urls = [str(u) for u in obj if isinstance(u, str)]
+            brief = run_pipeline(topic.strip())
+            status.update(label="Done", state="complete")
         except Exception as e:
-            st.error(f"Failed to parse uploaded file: {e}")
+            status.update(label="Error", state="error"); st.exception(e); st.stop()
 
-    urls = (extract_urls(url_text) or []) if not urls else list(dict.fromkeys(urls + extract_urls(url_text)))
+    md = render_markdown(brief)
 
-    col1, col2 = st.columns([1,1])
-    with col1:
-        run = st.button("Build report", type="primary")
-    with col2:
-        clear = st.button("Clear URLs")
-        if clear:
-            st.experimental_rerun()
+    # Persist artifacts
+    (ARTIFACTS/"brief.md").write_text(md, encoding="utf-8")
+    (ARTIFACTS/"sample_output.json").write_text(json.dumps(brief, indent=2, ensure_ascii=False), encoding="utf-8")
 
-with right:
-    st.subheader("Detected URLs")
-    if urls:
-        st.dataframe(pd.DataFrame({"url": urls}), width="stretch", hide_index=True)
-    else:
-        st.info("No URLs detected yet.")
+    # Left: report + downloads
+    with left:
+        st.subheader("Brief (Markdown)")
+        st.markdown(md)
+        st.download_button("Download Markdown", md.encode("utf-8"), "brief.md", "text/markdown", use_container_width=True)
+        st.download_button("Download JSON",
+                           json.dumps(brief, indent=2, ensure_ascii=False).encode("utf-8"),
+                           "sample_output.json", "application/json", use_container_width=True)
 
-if 'results' not in st.session_state:
-    st.session_state.results = []
-if 'report_md' not in st.session_state:
-    st.session_state.report_md = ""
+    # Right: sources & facts
+    with right:
+        st.subheader("Sources")
+        srcs = brief.get("sources") or []
+        if srcs:
+            df = pd.DataFrame([{
+                "title": s.get("title",""), "url": s.get("url",""),
+                "published_at": s.get("published_at","")
+            } for s in srcs])
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No sources found.")
 
-if run:
-    if not urls:
-        st.error("Please provide at least one URL.")
-    else:
-        results: List[Dict] = []
-        progress = st.progress(0.0, text="Fetching…")
-        for i, u in enumerate(urls, 1):
-            try:
-                if use_jina:
-                    title, text = fetch_via_jina(u, timeout=timeout)
-                else:
-                    title, text = fetch_html(u, timeout=timeout)
-                if not text:
-                    bullets, scored = [], []
-                else:
-                    if use_llm and LLM_AVAILABLE:
-                        bullets = summarize_with_groq(text, max_points=max_points)
-                        scored = [(s[0], s[1]) for s in score_sentences(" ".join(bullets))]
-                    else:
-                        bullets = summarize_extractive(text, max_points)
-                        scored = score_sentences(text)[:12]
-                results.append({"url": u, "title": title, "bullets": bullets, "scored": scored})
-            except Exception as e:
-                results.append({"url": u, "title": "(fetch failed)", "bullets": [f"Error: {e}"], "scored": []})
-            progress.progress(i/len(urls), text=f"Processed {i}/{len(urls)}")
-            time.sleep(0.05)
-
-        st.session_state.results = results
-        topic_guess = "Summaries for provided URLs"
-        if len(results) == 1 and results[0].get("title"):
-            topic_guess = results[0]["title"]
-        st.session_state.report_md = build_markdown_report(topic_guess, results, cite=cite)
-
-# -------------------------- Output Pane ------------------------------
-if st.session_state.report_md:
-    st.subheader("Report (Markdown)")
-    st.markdown(st.session_state.report_md)
-
-    (ARTIFACTS / "report.md").write_text(st.session_state.report_md, encoding="utf-8")
-    (ARTIFACTS / "report.json").write_text(json.dumps(st.session_state.results, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    colA, colB = st.columns(2)
-    with colA:
-        st.download_button("Download report.md",
-                           data=st.session_state.report_md.encode("utf-8"),
-                           file_name="report.md", mime="text/markdown", width="stretch")
-    with colB:
-        st.download_button("Download raw report.json",
-                           data=json.dumps(st.session_state.results, indent=2, ensure_ascii=False).encode("utf-8"),
-                           file_name="report.json", mime="application/json", width="stretch")
+        st.subheader("Facts")
+        facts = brief.get("key_facts") or []
+        if facts:
+            df_f = pd.DataFrame([{
+                "fact": f.get("fact",""),
+                "evidence_url": f.get("evidence_url",""),
+                "confidence": f.get("confidence", 0.0),
+            } for f in facts])
+            st.dataframe(df_f, use_container_width=True, hide_index=True)
+        else:
+            st.info("No extracted facts available.")
 else:
     st.markdown(
-        '<div class="callout">Paste URLs in the box on the left, or upload a list, then click <b>Build report</b>.</div>',
-        unsafe_allow_html=True,
+        '<div style="background:#3D155F;color:#fff;border:1px solid #2a0e43;border-radius:8px;'
+        'padding:12px 16px;font-size:.95rem;">Enter a topic in the sidebar and click '
+        '<b>Run research</b> to generate a brief.</div>',
+        unsafe_allow_html=True
     )
