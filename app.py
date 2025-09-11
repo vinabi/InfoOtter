@@ -119,7 +119,7 @@ if run_btn:
 
     # Display the brief
     with left:
-        st.subheader("Brief (Markdown)")
+        st.subheader("")
         st.markdown(md)
 
         st.download_button(
