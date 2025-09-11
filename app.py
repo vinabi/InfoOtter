@@ -99,7 +99,7 @@ if run_btn:
             final = compiled.invoke(init_state, config={"callbacks": get_callbacks()})
             brief = (final or {}).get("brief") or {}
         except Exception as e:
-            status.update(label="Error ❌", state="error")
+            status.update(label="Error", state="error")
             st.exception(e)
             st.stop()
 
