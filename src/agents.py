@@ -153,3 +153,35 @@ def run_writer(llm, query: str, facts: List[Dict], sources: List[Dict]) -> Dict:
         brief = {"topic": query, "summary": draft[:1500], "key_facts": facts, "sources": live_sources, "_markdown": md_final}
         _ = validate_brief(brief)  # even if validation warns, we still return markdown
         return brief
+
+def render_markdown_brief(brief: dict) -> str:
+    """Render a market brief dictionary as Markdown with summary, facts, and citations."""
+    lines = []
+    lines.append(f"# Market Brief: {brief.get('topic', '')}\n")
+    summary = brief.get('summary', '').strip()
+    if summary:
+        lines.append(f"**Summary:** {summary}\n")
+    facts = brief.get('key_facts')
+    if facts:
+        lines.append("## Key Facts")
+        for fact in facts:
+            # If fact is a dict, try to extract text and evidence
+            if isinstance(fact, dict):
+                fact_text = fact.get('fact') or str(fact)
+                evidence = fact.get('evidence_url')
+                if evidence:
+                    lines.append(f"- {fact_text} ([source]({evidence}))")
+                else:
+                    lines.append(f"- {fact_text}")
+            else:
+                lines.append(f"- {fact}")
+        lines.append("")
+    sources = brief.get('sources')
+    if sources:
+        lines.append("## References")
+        for i, s in enumerate(sources, 1):
+            title = s.get('title', s.get('url', f'Source {i}'))
+            url = s.get('url', '')
+            lines.append(f"{i}. [{title}]({url})")
+        lines.append("")
+    return "\n".join(lines)
