@@ -157,14 +157,22 @@ LANGCHAIN_ENDPOINT = "https://api.smith.langchain.com"
 Running locally
 ------------------
 
-### 1) Install
+### 1) Installation 
 
 ```
+git clone https://github.com/vinabi/infootter.git
+cd infootter
+
 python -m venv .venv
-source .venv/bin/activate    # Windows: .venv\Scripts\activate
+#macOS/Linux:
+source .venv/bin/activate     
+#Windows: 
+.venv\Scripts\activate
+
 pip install -U pip
 pip install -r requirements.txt
-cp .env.example .env         # fill as needed
+cp .env.example .env         
+
 ```
 
 ### 2) CLI pipeline (writes artifacts/)
