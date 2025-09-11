@@ -21,9 +21,9 @@ Features
 *   **Reference Summaries**: LLM produces 3–6 bullet summaries _per source_, inserted **right after the References**.
 *   **Artifacts** always saved (Cloud-safe temp dir): brief.md, sample\_output.json.
     
-🗂 Project layout
+Project layout
 -----------------
-
+```
 ├─ app.py                     # Streamlit UI, robust imports, writer fallback, ref summaries
 ├─ src/
 │  ├─ __init__.py
@@ -40,23 +40,24 @@ Features
 │  └─ config.toml            # Streamlit configs
 ├─ requirements.txt
 └─ .env.example               # optional for local
-
-🔧 Requirements
+```
+Requirements
 ---------------
 ```pip install -r requirements.txt```    
 
 > If your old env used duckduckgo-search, remove it and install **ddgs** (the maintained package).
 
-🔑 Environment variables
+Environment variables
 ------------------------
 
 All can be set via .env (local) **or** ~/.streamlit/secrets.toml (Streamlit Cloud).
 
 **Core (recommended):**
+```
 *   GROQ\_API\_KEY – for the writer/analyst LLM (e.g. llama3-70b).
 *   GROQ\_MODEL (default llama-3.3-70b-versatile)
 *   HTTP\_TIMEOUT (default 12) – cold containers benefit from 20–30s.
-    
+```
 
 **Extraction (optional; app works without them thanks to Jina fallback):**
 
@@ -92,9 +93,23 @@ LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
 
 ### Example .streamlit/secrets.toml (Cloud)
 
-Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   GROQ_API_KEY = "sk_..."  GROQ_MODEL   = "llama3-70b-8192"  HTTP_TIMEOUT = 20  # optional extractors  RAPIDAPI_KEY = "..."  TAVILY_API_KEY = "..."  # optional tracing  LANGSMITH_ENABLED = "true"  LANGCHAIN_API_KEY = "..."  LANGCHAIN_PROJECT = "market-brief"  LANGCHAIN_ENDPOINT = "https://api.smith.langchain.com"   `
+```
+GROQ_API_KEY = "sk_..."
+GROQ_MODEL   = "llama3-70b-8192"
+HTTP_TIMEOUT = 20
 
-▶️ Running locally
+# optional extractors
+RAPIDAPI_KEY = "..."
+TAVILY_API_KEY = "..."
+
+# optional tracing
+LANGSMITH_ENABLED = "true"
+LANGCHAIN_API_KEY = "..."
+LANGCHAIN_PROJECT = "market-brief"
+LANGCHAIN_ENDPOINT = "https://api.smith.langchain.com"
+```
+
+Running locally
 ------------------
 
 ### 1) Install
@@ -159,7 +174,7 @@ How robustness works (fallbacks)
     *   …/tmp/market\_agent\_artifacts/sample\_output.json
         
 
-🧾 Output structure
+Output structure
 -------------------
 
 The app renders a Markdown brief like:
@@ -176,7 +191,7 @@ Two downloads:
 *   **sample\_output.json** – full state: topic, facts, sources, markdown
     
 
-🛠 Troubleshooting
+Troubleshooting
 ------------------
 
 **Only references, no body**
@@ -202,7 +217,7 @@ Two downloads:
 
 *   Jina Reader usually works; if not, local readability+markdownify is the last fallback. Consider adding more sources or a different seed URL.
     
-🧪 Quick checklist
+Quick checklist
 ------------------
 
 *   compiled = graph.compile()\_\_all\_\_ = \["compiled"\]
