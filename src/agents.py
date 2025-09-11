@@ -250,7 +250,7 @@ def run_writer(llm, query: str, facts: List[Dict], sources: List[Dict]) -> Dict:
         if not basic_moderation(query):
             raise ValueError("Query failed moderation")
         if not sources:
-            md = f"# Market Brief: {query}\n\n_No sources found._\n"
+            md = f"# Research Brief: {query}\n\n_No sources found._\n"
             return {"topic": query, "summary": md, "key_facts": facts, "sources": [], "_markdown": md}
 
         # Convert each URL to contextual markdown
