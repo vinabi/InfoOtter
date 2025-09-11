@@ -1,187 +1,156 @@
-import os, sys, json, tempfile, requests, importlib
+# app.py  — replace everything
+import os
+import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pandas as pd
 import streamlit as st
+from dotenv import load_dotenv
+from importlib import reload
 
-# ------------------------- Secrets → env -------------------------------------
-def _load_secrets_into_env():
-    try:
-        for k, v in st.secrets.items():
-            if isinstance(v, (str, int, float, bool)):
-                os.environ[str(k)] = str(v)
-            elif isinstance(v, dict):
-                for kk, vv in v.items():
-                    os.environ[str(kk)] = str(vv)
-    except Exception:
-        pass
-_load_secrets_into_env()
+# --- 0) Load config EARLY (fixes Cloud "refs-only" brief) ---
+load_dotenv(override=False)                       # local dev
+if hasattr(st, "secrets"):                        # Streamlit Cloud
+    for k, v in st.secrets.items():
+        os.environ[str(k)] = str(v)
 
-# ------------------------- Ensure package on path & registered ---------------
+# --- 1) Page + styling ---
+st.set_page_config(page_title="Market Research Multiagent", page_icon="📈", layout="wide")
+st.markdown("""
+<style>
+div[data-testid="stAlert"], div[role="alert"], div.stAlert{
+  background:#3D155F!important;color:#fff!important;border:1px solid #2a0e43!important;border-radius:8px!important;
+}
+div[data-testid="stAlert"] *,div[role="alert"] *{color:#fff!important;fill:#fff!important;}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("Market Research Multiagent")
+st.caption("Query → Search → Analyze → Write → Markdown")
+
 ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+ARTIFACTS = ROOT / "artifacts"
+ARTIFACTS.mkdir(parents=True, exist_ok=True)
 
-# Make sure 'src' package is registered before importing submodules
-# (avoids KeyError: 'src' from Streamlit's reloader)
-try:
-    import src  # type: ignore
-except Exception:
-    importlib.import_module("src")
+# --- 2) Sidebar FIRST (so env reflects user choices) ---
+with st.sidebar:
+    st.header("Settings")
+    default_topic = os.getenv("QUERY", "").strip().strip('"') or "agent-to-agent (A2A) and Model Context Protocol (MCP)"
+    topic = st.text_area("Research topic", value=default_topic, height=90)
 
-graph_mod = importlib.import_module("src.graph")
-compiled = getattr(graph_mod, "compiled")
+    c1, c2 = st.columns(2)
+    max_sources    = c1.number_input("Max sources", 3, 30, int(os.getenv("MAX_SOURCES", "10")), 1)
+    min_non_empty  = c2.number_input("Min non-empty", 1, 20, int(os.getenv("MIN_NON_EMPTY_SOURCES", "5")), 1)
 
-try:
-    obs_mod = importlib.import_module("src.observability")
-    get_callbacks = getattr(obs_mod, "get_callbacks")
-except Exception:
-    def get_callbacks(): return []
+    llm_mode  = st.selectbox("LLM mode", ["groq", "stub"],
+                             index=0 if os.getenv("LLM_MODE","groq").lower()=="groq" else 1)
+    tracing_on = st.toggle("Enable LangSmith tracing",
+                           value=os.getenv("LANGSMITH_ENABLED","false").lower() in ("1","true","yes","on"))
+    allow_stubs = st.toggle("Allow offline stubs when search fails",
+                            value=os.getenv("ALLOW_STUBS","false").lower() in ("1","true","yes","on"))
+    http_timeout = st.slider("HTTP timeout (s)", 5, 60, int(os.getenv("HTTP_TIMEOUT","15")))
+    run_btn = st.button("Run research", type="primary", use_container_width=True)
 
-# Import writer + LLM (used after Jina enrichment)
-try:
-    agents_mod = importlib.import_module("src.agents")
-    run_writer = getattr(agents_mod, "run_writer")
-    get_llm = getattr(agents_mod, "get_llm")
-    HAVE_WRITER = True
-except Exception:
-    HAVE_WRITER = False
-    def get_llm():
-        class _Stub:
-            def invoke(self, prompt: str):
-                class R: 
-                    def __init__(self, t): self.content = t
-                return R(prompt[:4000] + "\n\n(Stub summary)")
-        return _Stub()
+# Apply sidebar → env (so imports see correct config)
+os.environ.update({
+    "MAX_SOURCES": str(max_sources),
+    "MIN_NON_EMPTY_SOURCES": str(min_non_empty),
+    "LLM_MODE": llm_mode,
+    "LANGSMITH_ENABLED": "true" if tracing_on else "false",
+    "ALLOW_STUBS": "true" if allow_stubs else "false",
+    "HTTP_TIMEOUT": str(http_timeout),
+})
 
-# ------------------------- Jina Reader (no-key) ------------------------------
-def jina_extract(url: str, timeout: int = 20) -> str:
-    try:
-        api = f"https://r.jina.ai/http://{url.split('://',1)[-1]}"
-        r = requests.get(api, timeout=timeout)
-        r.raise_for_status()
-        return r.text
-    except Exception as e:
-        return f"# [Jina fetch failed] {url}\n\n{e}\n"
+# --- 3) Import pipeline AFTER env is ready; reload to pick up changes ---
+import src.agents as agents
+import src.graph as graph
+import src.observability as observability
+reload(agents); reload(graph); reload(observability)
 
-# ------------------------- Minimal renderer (last resort) ---------------------
-def render_markdown_brief(brief: Dict[str, Any]) -> str:
-    topic = brief.get("topic", "")
-    summary = brief.get("summary", "")
-    facts = brief.get("key_facts") or []
-    sources = brief.get("sources") or []
-    lines = [f"# Market Brief: {topic}", "", summary, ""]
-    if facts:
+compiled = graph.compiled
+get_callbacks = observability.get_callbacks
+
+# --- 4) Safe renderer: use writer’s markdown, else fallback ---
+def _render_markdown_fallback(brief: Dict) -> str:
+    lines = [f"# Market Brief: {brief.get('topic','')}", ""]
+    if brief.get("summary"): lines += [brief["summary"], ""]
+    if brief.get("key_facts"):
         lines.append("## Key Facts")
-        for f in facts:
+        for f in brief["key_facts"]:
+            ev = f.get("evidence_url","")
             lines.append(f"- {f.get('fact','')}")
+            if ev: lines.append(f"  Evidence: {ev} (confidence {f.get('confidence',0):.2f})")
         lines.append("")
-    if sources:
+    srcs = brief.get("sources") or []
+    if srcs:
         lines.append("## References")
-        for i, s in enumerate(sources, 1):
-            lines.append(f"{i}. [{s.get('title','')}]({s.get('url','')})")
+        for i, s in enumerate(srcs, 1):
+            title = s.get("title") or "Untitled"
+            url = s.get("url","")
+            pub = s.get("published_at") or ""
+            lines.append(f"{i}. [{title}]({url}) {pub}")
         lines.append("")
     return "\n".join(lines)
 
-def is_substantive(md: str) -> bool:
-    md = (md or "").strip()
-    return bool(md and len(md) >= 800 and "References" in md)
+def render_markdown(brief: Dict) -> str:
+    md = brief.get("_markdown")
+    if md: return md
+    fn = getattr(agents, "render_markdown_brief", None)
+    if callable(fn):
+        try: return fn(brief)
+        except Exception: pass
+    return _render_markdown_fallback(brief)
 
-# ------------------------- UI -------------------------------------------------
-st.set_page_config(page_title="Market Brief Agent", page_icon="📈", layout="wide")
-st.title("📈 Market Brief Agent")
-st.caption("Runs your graph → fetches each URL via Jina → re-invokes your writer for a full cited brief.")
+# --- 5) Runner ---
+def run_pipeline(q: str) -> Dict[str, Any]:
+    state_in = {"query": q, "failure_count": 0}
+    callbacks = get_callbacks()  # [] if tracing disabled/missing
+    out = compiled.invoke(state_in, config={"callbacks": callbacks})
+    return out.get("brief") or {}
 
-with st.sidebar:
-    st.header("Settings")
-    query = st.text_area(
-        "Enter a topic or a URL",
-        value=os.getenv("QUERY", ""),
-        height=90,
-        placeholder="e.g., voice search optimization OR https://example.com/post"
-    )
-    http_timeout = st.slider("HTTP_TIMEOUT (s)", 5, 60, int(os.getenv("HTTP_TIMEOUT", "20")))
-    run_btn = st.button("▶️ Run", type="primary", use_container_width=True)
-
+# --- 6) UI body ---
 left, right = st.columns([2, 1])
 
-def _artifacts_dir() -> Path:
-    p = Path(tempfile.gettempdir()) / "market_agent_artifacts"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-# ------------------------- Run ------------------------------------------------
 if run_btn:
-    q = (query or "").strip()
-    if not q:
-        st.error("Please enter a topic or a URL.")
-        st.stop()
+    if not topic.strip():
+        st.error("Please enter a topic to research."); st.stop()
 
-    with st.status("Running pipeline…", expanded=True) as status:
-        # 1) Run your compiled graph
-        status.write("• Invoking compiled graph")
+    with st.status("Running research pipeline…", expanded=True) as status:
+        st.write("• Searching & collecting sources")
+        st.write("• Extracting facts")
+        st.write("• Writing the brief")
         try:
-            init_state = {"query": q, "failure_count": 0}
-            final = compiled.invoke(init_state, config={"callbacks": get_callbacks()})
-            brief = (final or {}).get("brief") or {}
+            brief = run_pipeline(topic.strip())
+            status.update(label="Done", state="complete")
         except Exception as e:
-            status.update(label="Error ❌", state="error")
-            st.exception(e)
-            st.stop()
+            status.update(label="Error", state="error"); st.exception(e); st.stop()
 
-        # 2) Pull URLs & fetch content with Jina
-        status.write("• Fetching content via Jina for each source")
-        sources = brief.get("sources") or []
-        enriched_sources: List[Dict[str, Any]] = []
-        for s in sources:
-            url = (s.get("url") or "").strip()
-            if not url:
-                continue
-            md_text = jina_extract(url, timeout=http_timeout)
-            enriched_sources.append({**s, "content": md_text})
-        if enriched_sources:
-            brief["sources"] = enriched_sources
+    md = render_markdown(brief)
 
-        # 3) Re-run your writer using enriched sources
-        md = (brief.get("_markdown") or "").strip()
-        if HAVE_WRITER:
-            status.write("• Rewriting with project writer (Jina-enriched sources)")
-            try:
-                llm = get_llm()
-                facts = brief.get("key_facts") or []
-                regenerated = run_writer(llm, q, facts, enriched_sources)
-                if isinstance(regenerated, dict):
-                    brief.update({k: v for k, v in regenerated.items() if v})
-                    md = (brief.get("_markdown") or "").strip()
-            except Exception as e:
-                st.warning(f"Writer fallback failed: {type(e).__name__}: {e}")
+    # Persist artifacts
+    (ARTIFACTS/"brief.md").write_text(md, encoding="utf-8")
+    (ARTIFACTS/"sample_output.json").write_text(json.dumps(brief, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        if not md:
-            md = render_markdown_brief(brief)
-
-        status.update(label="Done ✅", state="complete")
-
-    # 4) Save artifacts (Cloud-safe)
-    outdir = _artifacts_dir()
-    (outdir / "brief.md").write_text(md, encoding="utf-8")
-    (outdir / "sample_output.json").write_text(json.dumps(brief, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    # 5) Display
+    # Left: report + downloads
     with left:
         st.subheader("Brief (Markdown)")
         st.markdown(md)
-        st.download_button("💾 Download Markdown", md.encode("utf-8"), "brief.md", "text/markdown", use_container_width=True)
-        st.download_button("💾 Download JSON",
+        st.download_button("Download Markdown", md.encode("utf-8"), "brief.md", "text/markdown", use_container_width=True)
+        st.download_button("Download JSON",
                            json.dumps(brief, indent=2, ensure_ascii=False).encode("utf-8"),
                            "sample_output.json", "application/json", use_container_width=True)
 
+    # Right: sources & facts
     with right:
         st.subheader("Sources")
         srcs = brief.get("sources") or []
         if srcs:
-            df = pd.DataFrame([{"title": s.get("title",""), "url": s.get("url","")} for s in srcs])
-            st.dataframe(df, width="stretch", hide_index=True)
+            df = pd.DataFrame([{
+                "title": s.get("title",""), "url": s.get("url",""),
+                "published_at": s.get("published_at","")
+            } for s in srcs])
+            st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             st.info("No sources found.")
 
@@ -193,9 +162,13 @@ if run_btn:
                 "evidence_url": f.get("evidence_url",""),
                 "confidence": f.get("confidence", 0.0),
             } for f in facts])
-            st.dataframe(df_f, width="stretch", hide_index=True)
+            st.dataframe(df_f, use_container_width=True, hide_index=True)
         else:
             st.info("No extracted facts available.")
-
 else:
-    st.info("Enter a topic or a URL in the sidebar and click **Run**.")
+    st.markdown(
+        '<div style="background:#3D155F;color:#fff;border:1px solid #2a0e43;border-radius:8px;'
+        'padding:12px 16px;font-size:.95rem;">Enter a topic in the sidebar and click '
+        '<b>Run research</b> to generate a brief.</div>',
+        unsafe_allow_html=True
+    )
