@@ -1,17 +1,4 @@
-# app.py — URL → Report (drop‑in)
-# Streamlit app that takes a list of URLs, fetches pages, summarizes their
-# content, and produces a clean Markdown report with optional citations.
-#
-# How to run:
-#   pip install streamlit requests beautifulsoup4 pandas python-dotenv
-#   streamlit run app.py
-#
-# Notes:
-# - No external LLM required. Includes a lightweight extractive summarizer.
-# - If you set OPENAI_API_KEY in your environment, you can toggle an
-#   optional LLM summarizer in the sidebar for higher‑quality summaries.
-# - Works fully offline *after* pages are fetched (summarization is local by default).
-
+# app.py — URL → Report (Streamlit + Jina Reader + optional Groq LLM)
 import os
 import re
 import math
@@ -31,7 +18,6 @@ load_dotenv(override=False)
 
 st.set_page_config(page_title="URL → Report", page_icon="🧩", layout="wide")
 
-# Simple style for alerts / callouts
 st.markdown(
     """
     <style>
@@ -57,40 +43,43 @@ URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9']+")
 STOPWORDS = {
-    # Tiny English stopword list (avoid heavy deps). Extend as needed.
     "the","a","an","and","or","but","if","then","else","when","while","of","to","in","on","for","with",
     "as","by","from","at","is","it","this","that","these","those","be","been","are","was","were","will",
     "can","may","might","should","would","could","we","you","they","he","she","i","me","my","our","your",
     "their","them","his","her","its","about","into","over","under","between","within","per","via","not",
 }
 
-
 def extract_urls(block: str) -> List[str]:
-    """Grab URLs from any pasted text; return unique in order of appearance."""
     seen, out = set(), []
     for m in URL_RE.finditer(block or ""):
         u = m.group(0).strip().rstrip(".,);]")
         if u not in seen:
-            seen.add(u)
-            out.append(u)
+            seen.add(u); out.append(u)
     return out
 
+# ---------- Fetch via Jina Reader (Markdown-like) ----------
+def fetch_via_jina(url: str, timeout: int = 20) -> Tuple[str, str]:
+    api = f"https://r.jina.ai/http://{url.split('://',1)[-1]}"
+    r = requests.get(api, timeout=timeout)
+    r.raise_for_status()
+    md = r.text
+    # crude title guess = first markdown heading or the URL
+    title = url
+    for line in md.splitlines():
+        if line.startswith("#"):
+            title = line.lstrip("# ").strip() or url
+            break
+    return title, md
 
+# ---------- Local HTML → text (fallback) ----------
 def fetch_html(url: str, timeout: int = 15, max_bytes: int = 5_000_000) -> Tuple[str, str]:
-    """Return (title, visible_text) from a URL. Tries to be resilient and lightweight."""
     headers = {"User-Agent": DEFAULT_USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
     r = requests.get(url, headers=headers, timeout=timeout)
     r.raise_for_status()
-
-    # Limit payload to prevent blowups
     content = r.content[:max_bytes]
     soup = BeautifulSoup(content, "html.parser")
-
-    # Remove scripts/styles/navs that add noise
     for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "form", "aside"]):
         tag.decompose()
-
-    # Title
     title = ""
     if soup.title and soup.title.string:
         title = soup.title.string.strip()
@@ -98,155 +87,111 @@ def fetch_html(url: str, timeout: int = 15, max_bytes: int = 5_000_000) -> Tuple
         og = soup.find("meta", attrs={"property": "og:title"})
         if og and og.get("content"):
             title = og["content"].strip()
-
-    # Visible text
     text = " ".join(t.strip() for t in soup.stripped_strings)
     return (title or url, text)
 
-
 # ---------------------- Summarization Engines ------------------------
-
 def split_sentences(text: str) -> List[str]:
     text = (text or "").replace("\n", " ")
-    # naive split that works well-enough without extra deps
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-
 
 def score_sentences(text: str) -> List[Tuple[float, str]]:
     sentences = split_sentences(text)
-    if not sentences:
-        return []
-
-    # Build frequencies
+    if not sentences: return []
     freqs: Dict[str, float] = {}
     for s in sentences:
         for w in WORD_RE.findall(s.lower()):
-            if w in STOPWORDS or len(w) <= 2:
-                continue
+            if w in STOPWORDS or len(w) <= 2: continue
             freqs[w] = freqs.get(w, 0) + 1.0
-
-    # Normalize
     if freqs:
         maxf = max(freqs.values())
         for k in list(freqs.keys()):
-            freqs[k] = freqs[k] / maxf
-
-    # Score sentences by sum of normalized term frequencies
+            freqs[k] /= maxf
     scored: List[Tuple[float, str]] = []
     for s in sentences:
         score = 0.0
         for w in WORD_RE.findall(s.lower()):
             score += freqs.get(w, 0.0)
-        # slight preference for mid-length sentences
-        length_penalty = 1.0
         n_words = max(1, len(WORD_RE.findall(s)))
-        if n_words < 8 or n_words > 40:
-            length_penalty = 0.8
+        length_penalty = 0.8 if (n_words < 8 or n_words > 40) else 1.0
         scored.append((score * length_penalty, s))
-
-    # Return ranked list (desc)
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored
 
-
 def summarize_extractive(text: str, max_sentences: int = 5) -> List[str]:
     ranked = score_sentences(text)
-    if not ranked:
-        return []
-
-    # Take top N, keep original order
+    if not ranked: return []
     top = {s for _, s in ranked[: max(1, max_sentences * 2)]}
     sentences = split_sentences(text)
     kept: List[str] = []
     for s in sentences:
-        if s in top:
-            kept.append(s)
-        if len(kept) >= max_sentences:
-            break
+        if s in top: kept.append(s)
+        if len(kept) >= max_sentences: break
     return kept
 
-
-# Optional: LLM summarizer (only if OPENAI_API_KEY present)
-LLM_AVAILABLE = bool(os.environ.get("OPENAI_API_KEY"))
+# ---------- Optional Groq LLM summarizer ----------
+GROQ_KEY = os.getenv("GROQ_API_KEY")
 try:
-    if LLM_AVAILABLE:
-        from openai import OpenAI  # type: ignore
-        _openai_client = OpenAI()
+    if GROQ_KEY:
+        from langchain_groq import ChatGroq  # lightweight LC wrapper
+        _groq = ChatGroq(model_name=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile"), temperature=0.2)
+        LLM_AVAILABLE = True
     else:
-        _openai_client = None
+        _groq = None
+        LLM_AVAILABLE = False
 except Exception:
+    _groq = None
     LLM_AVAILABLE = False
-    _openai_client = None
 
-
-def summarize_with_llm(text: str, model: str = "gpt-4o-mini", max_points: int = 5) -> List[str]:
-    if not LLM_AVAILABLE or not _openai_client:
+def summarize_with_groq(text: str, max_points: int = 5) -> List[str]:
+    if not LLM_AVAILABLE or not _groq:
         return summarize_extractive(text, max_points)
     prompt = (
-        "Summarize the following webpage content into concise bullet points (max "
-        f"{max_points}). Focus on the main findings, claims, or guidance.\n\n" 
+        "Summarize the following webpage content into concise bullet points "
+        f"(max {max_points}). Focus on key facts, claims, metrics, guidance.\n\n"
         "TEXT:\n" + text[:120000]
     )
     try:
-        resp = _openai_client.chat.completions.create(
-            model=model,
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.2,
-        )
-        msg = resp.choices[0].message.content or ""
-        # Convert to bullets (strip any formatting)
-        bullets = [re.sub(r"^[\-\d\.)\s]+", "", ln).strip() for ln in msg.splitlines() if ln.strip()]
+        resp = _groq.invoke(prompt)
+        msg = getattr(resp, "content", "") or ""
+        bullets = [re.sub(r"^[\\-\\d\\.\\)\\s]+", "", ln).strip() for ln in msg.splitlines() if ln.strip()]
         return [b for b in bullets if b][:max_points]
     except Exception:
         return summarize_extractive(text, max_points)
 
-
 # --------------------------- Reporting -------------------------------
-
-def build_markdown_report(topic: str,
-                          items: List[Dict],
-                          cite: bool = True) -> str:
+def build_markdown_report(topic: str, items: List[Dict], cite: bool = True) -> str:
     lines: List[str] = []
     lines.append(f"# Report: {topic or 'Collected URLs'}\n")
 
-    # Executive summary: pick 6 most salient bullets across sources (by score proxy)
-    pooled: List[Tuple[float, str, int]] = []  # (score, sentence, idx)
+    pooled: List[Tuple[float, str, int]] = []
     for idx, it in enumerate(items):
-        for s, sc in it.get("scored", [])[:6]:  # lightweight cap
+        for s, sc in it.get("scored", [])[:6]:
             pooled.append((sc, s, idx))
     pooled.sort(key=lambda x: x[0], reverse=True)
-    exec_pts = []
-    seen_sent = set()
+    exec_pts, seen = [], set()
     for _, s, _ in pooled:
-        if s.lower() in seen_sent:
-            continue
-        exec_pts.append(s)
-        seen_sent.add(s.lower())
-        if len(exec_pts) >= 6:
-            break
+        if s.lower() in seen: continue
+        exec_pts.append(s); seen.add(s.lower())
+        if len(exec_pts) >= 6: break
 
     if exec_pts:
         lines.append("## Executive Summary")
-        for s in exec_pts:
-            lines.append(f"- {s}")
+        for s in exec_pts: lines.append(f"- {s}")
         lines.append("")
 
-    # Per‑URL sections
     for i, it in enumerate(items, 1):
         title = it.get("title") or f"Source {i}"
         url = it.get("url") or ""
         lines.append(f"## {title}")
-        if url:
-            lines.append(f"Source: {url}")
+        if url: lines.append(f"Source: {url}")
         bullets = it.get("bullets") or []
         if bullets:
-            for b in bullets:
-                lines.append(f"- {b}")
+            for b in bullets: lines.append(f"- {b}")
         else:
             lines.append("- (No content extracted)")
         lines.append("")
 
-    # Optional references
     if cite:
         lines.append("## References")
         for i, it in enumerate(items, 1):
@@ -254,28 +199,25 @@ def build_markdown_report(topic: str,
             t = (it.get("title") or u or f"Source {i}").strip()
             lines.append(f"{i}. [{t}]({u})")
         lines.append("")
-
     return "\n".join(lines)
-
 
 # ---------------------------- UI ------------------------------------
 with st.sidebar:
     st.header("Settings")
-    default_text = os.getenv("URLS", "")
-    model_choice = "LLM (if key set)" if LLM_AVAILABLE else "Extractive (local)"
-    use_llm = st.toggle("Use LLM summarizer", value=False, help="Requires OPENAI_API_KEY in env.")
+    use_jina = st.toggle("Use Jina Reader (no key)", value=True, help="Reads pages as Markdown via r.jina.ai")
+    use_llm = st.toggle("Use Groq summarizer", value=bool(GROQ_KEY), help="Needs GROQ_API_KEY in secrets/env")
     max_points = st.slider("Bullets per source", 3, 10, 5)
-    timeout = st.slider("HTTP timeout (s)", 5, 45, int(os.getenv("HTTP_TIMEOUT", "15")))
+    timeout = st.slider("HTTP timeout (s)", 5, 45, int(os.getenv("HTTP_TIMEOUT", "20")))
     cite = st.toggle("Include references section", value=True)
 
 st.title("URL → Report")
-st.caption("Paste text containing URLs or upload a file. I’ll fetch each page, summarize, and produce a Markdown report.")
+st.caption("Paste URLs or upload a file. I’ll fetch each page (Jina or HTML), summarize (Groq or extractive), then compile a Markdown report.")
 
 left, right = st.columns([2, 1])
 
 with left:
     url_text = st.text_area("Paste URLs or any text containing them", value=os.getenv("URLS", ""), height=160,
-                            placeholder="One per line, or paste any text—I’ll auto‑extract links…")
+                            placeholder="One per line, or paste any text—I’ll auto-extract links…")
     uploaded = st.file_uploader("…or upload a .txt / .csv / .json file of URLs", type=["txt", "csv", "json"], accept_multiple_files=False)
 
     urls: List[str] = []
@@ -287,7 +229,6 @@ with left:
                 urls = extract_urls(data.decode("utf-8", "ignore"))
             elif name.endswith(".csv"):
                 df = pd.read_csv(uploaded)
-                # take first column that looks like url-ish
                 for col in df.columns:
                     vals = [str(v) for v in df[col].dropna().tolist()]
                     if any(v.startswith("http") for v in vals):
@@ -305,7 +246,6 @@ with left:
         except Exception as e:
             st.error(f"Failed to parse uploaded file: {e}")
 
-    # Merge with pasted
     urls = (extract_urls(url_text) or []) if not urls else list(dict.fromkeys(urls + extract_urls(url_text)))
 
     col1, col2 = st.columns([1,1])
@@ -314,19 +254,17 @@ with left:
     with col2:
         clear = st.button("Clear URLs")
         if clear:
-            url_text = ""
             st.experimental_rerun()
 
 with right:
     st.subheader("Detected URLs")
     if urls:
-        st.dataframe(pd.DataFrame({"url": urls}), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame({"url": urls}), width="stretch", hide_index=True)
     else:
         st.info("No URLs detected yet.")
 
 if 'results' not in st.session_state:
     st.session_state.results = []
-
 if 'report_md' not in st.session_state:
     st.session_state.report_md = ""
 
@@ -338,18 +276,19 @@ if run:
         progress = st.progress(0.0, text="Fetching…")
         for i, u in enumerate(urls, 1):
             try:
-                title, text = fetch_html(u, timeout=timeout)
+                if use_jina:
+                    title, text = fetch_via_jina(u, timeout=timeout)
+                else:
+                    title, text = fetch_html(u, timeout=timeout)
                 if not text:
-                    bullets = []
-                    scored = []
+                    bullets, scored = [], []
                 else:
                     if use_llm and LLM_AVAILABLE:
-                        bullets = summarize_with_llm(text, max_points=max_points)
-                        # Build pseudo scores by re‑scoring locally so we can pool later
+                        bullets = summarize_with_groq(text, max_points=max_points)
                         scored = [(s[0], s[1]) for s in score_sentences(" ".join(bullets))]
                     else:
                         bullets = summarize_extractive(text, max_points)
-                        scored = score_sentences(text)[:12]  # keep small
+                        scored = score_sentences(text)[:12]
                 results.append({"url": u, "title": title, "bullets": bullets, "scored": scored})
             except Exception as e:
                 results.append({"url": u, "title": "(fetch failed)", "bullets": [f"Error: {e}"], "scored": []})
@@ -357,20 +296,16 @@ if run:
             time.sleep(0.05)
 
         st.session_state.results = results
-
         topic_guess = "Summaries for provided URLs"
         if len(results) == 1 and results[0].get("title"):
             topic_guess = results[0]["title"]
-
-        md = build_markdown_report(topic_guess, results, cite=cite)
-        st.session_state.report_md = md
+        st.session_state.report_md = build_markdown_report(topic_guess, results, cite=cite)
 
 # -------------------------- Output Pane ------------------------------
 if st.session_state.report_md:
     st.subheader("Report (Markdown)")
     st.markdown(st.session_state.report_md)
 
-    # Save artifacts
     (ARTIFACTS / "report.md").write_text(st.session_state.report_md, encoding="utf-8")
     (ARTIFACTS / "report.json").write_text(json.dumps(st.session_state.results, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -378,12 +313,11 @@ if st.session_state.report_md:
     with colA:
         st.download_button("Download report.md",
                            data=st.session_state.report_md.encode("utf-8"),
-                           file_name="report.md", mime="text/markdown", use_container_width=True)
+                           file_name="report.md", mime="text/markdown", width="stretch")
     with colB:
         st.download_button("Download raw report.json",
                            data=json.dumps(st.session_state.results, indent=2, ensure_ascii=False).encode("utf-8"),
-                           file_name="report.json", mime="application/json", use_container_width=True)
-
+                           file_name="report.json", mime="application/json", width="stretch")
 else:
     st.markdown(
         '<div class="callout">Paste URLs in the box on the left, or upload a list, then click <b>Build report</b>.</div>',
