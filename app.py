@@ -1,7 +1,7 @@
-# app.py — Streamlit shell around your compiled graph
-import os, sys, json, tempfile
+# app.py — Streamlit wrapper that enriches URLs via Jina Reader
+import os, sys, json, tempfile, requests
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pandas as pd
 import streamlit as st
@@ -24,13 +24,26 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Import your compiled graph + writer
 from src.graph import compiled
+from src.agents import run_writer, get_llm
 try:
     from src.observability import get_callbacks
 except Exception:
     def get_callbacks(): return []
 
-# ------------------------- Local fallback renderer ---------------------------
+# ------------------------- Jina Reader helper --------------------------------
+def jina_extract(url: str, timeout: int = 20) -> str:
+    """Fetch content as Markdown-like text via Jina Reader API."""
+    try:
+        api = f"https://r.jina.ai/http://{url.split('://',1)[-1]}"
+        r = requests.get(api, timeout=timeout)
+        r.raise_for_status()
+        return r.text
+    except Exception as e:
+        return f"# [Jina fetch failed] {url}\n\n{e}\n"
+
+# ------------------------- Markdown fallback ---------------------------------
 def render_markdown_brief(brief: Dict[str, Any]) -> str:
     topic = brief.get("topic", "")
     summary = brief.get("summary", "")
@@ -40,30 +53,19 @@ def render_markdown_brief(brief: Dict[str, Any]) -> str:
     if facts:
         lines.append("## Key Facts")
         for f in facts:
-            ev = f.get("evidence_url", "")
-            conf = f.get("confidence", 0)
             lines.append(f"- {f.get('fact','')}")
-            if ev:
-                lines.append(f"  Evidence: {ev} (confidence {conf:.2f})")
         lines.append("")
     if sources:
         lines.append("## References")
         for i, s in enumerate(sources, 1):
-            title = s.get("title") or "Untitled"
-            url = s.get("url","")
-            pub = s.get("published_at") or ""
-            lines.append(f"{i}. [{title}]({url}) {pub}")
+            lines.append(f"{i}. [{s.get('title','')}]({s.get('url','')})")
         lines.append("")
     return "\n".join(lines)
-
-def is_substantive(md: str) -> bool:
-    md = (md or "").strip()
-    return bool(md and len(md) >= 800 and "References" in md)
 
 # ------------------------- Streamlit UI --------------------------------------
 st.set_page_config(page_title="Market Brief Agent", page_icon="📈", layout="wide")
 st.title("📈 Market Brief Agent")
-st.caption("Runs your original multi-agent chain")
+st.caption("Runs your chain, then fetches all URLs via Jina Reader to guarantee full content.")
 
 with st.sidebar:
     st.header("Settings")
@@ -73,20 +75,10 @@ with st.sidebar:
         height=90,
         placeholder="e.g., voice search optimization OR https://example.com/post"
     )
-    col1, col2 = st.columns(2)
-    with col1:
-        max_sources = st.number_input("MAX_SOURCES", 3, 50, int(os.getenv("MAX_SOURCES", "10")))
-    with col2:
-        min_non_empty = st.number_input("MIN_NON_EMPTY_SOURCES", 1, 20, int(os.getenv("MIN_NON_EMPTY_SOURCES", "5")))
-    http_timeout = st.slider("HTTP_TIMEOUT (s)", 5, 60, int(os.getenv("HTTP_TIMEOUT", "15")))
-    tracing = st.toggle("LangSmith tracing", value=os.getenv("LANGSMITH_ENABLED","false").lower() in ("1","true","yes","on"))
+    http_timeout = st.slider("HTTP_TIMEOUT (s)", 5, 60, int(os.getenv("HTTP_TIMEOUT", "20")))
     run_btn = st.button("▶️ Run", type="primary", use_container_width=True)
 
-os.environ["MAX_SOURCES"] = str(max_sources)
-os.environ["MIN_NON_EMPTY_SOURCES"] = str(min_non_empty)
-os.environ["HTTP_TIMEOUT"] = str(http_timeout)
-os.environ["LANGSMITH_ENABLED"] = "true" if tracing else "false"
-
+# ------------------------- Run pipeline --------------------------------------
 left, right = st.columns([2, 1])
 
 def _artifacts_dir() -> Path:
@@ -101,38 +93,62 @@ if run_btn:
         st.stop()
 
     with st.status("Running pipeline…", expanded=True) as status:
-        state_in: Dict[str, Any] = {"query": q, "failure_count": 0}
+        status.write("• Invoking compiled LangGraph")
         try:
-            final = compiled.invoke(state_in, config={"callbacks": get_callbacks()})
+            init_state = {"query": q, "failure_count": 0}
+            final = compiled.invoke(init_state, config={"callbacks": get_callbacks()})
             brief = (final or {}).get("brief") or {}
-            status.update(label="Done ✅", state="complete")
         except Exception as e:
             status.update(label="Error ❌", state="error")
             st.exception(e)
             st.stop()
 
-    md = (brief.get("_markdown") or "").strip()
-    if not md:
-        md = render_markdown_brief(brief)
+        # Enrich URLs via Jina
+        sources = brief.get("sources") or []
+        enriched_sources: List[Dict[str, Any]] = []
+        for s in sources:
+            url = s.get("url")
+            if not url:
+                continue
+            md_text = jina_extract(url, timeout=http_timeout)
+            enriched_sources.append({**s, "content": md_text})
+        if enriched_sources:
+            brief["sources"] = enriched_sources
 
+        # Re-run writer with enriched sources
+        status.write("• Rewriting with Jina-enriched sources")
+        try:
+            llm = get_llm()
+            facts = brief.get("key_facts") or []
+            brief2 = run_writer(llm, q, facts, enriched_sources)
+            if isinstance(brief2, dict):
+                brief.update(brief2)
+        except Exception as e:
+            st.warning(f"Writer failed: {e}")
+
+        md = (brief.get("_markdown") or "").strip()
+        if not md:
+            md = render_markdown_brief(brief)
+
+        status.update(label="Done ✅", state="complete")
+
+    # Save artifacts
     outdir = _artifacts_dir()
     (outdir / "brief.md").write_text(md, encoding="utf-8")
     (outdir / "sample_output.json").write_text(json.dumps(brief, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    # Show output
     with left:
         st.subheader("Brief (Markdown)")
         st.markdown(md)
-        st.download_button("💾 Download Markdown", md.encode("utf-8"), "brief.md", "text/markdown", width="stretch")
+        st.download_button("💾 Download Markdown", md.encode("utf-8"), "brief.md", "text/markdown", use_container_width=True)
         st.download_button("💾 Download JSON", json.dumps(brief, indent=2, ensure_ascii=False).encode("utf-8"),
-                           "sample_output.json", "application/json", width="stretch")
+                           "sample_output.json", "application/json", use_container_width=True)
 
     with right:
         st.subheader("Sources")
-        srcs = brief.get("sources") or []
-        if srcs:
-            df = pd.DataFrame([{
-                "title": s.get("title",""), "url": s.get("url",""), "published_at": s.get("published_at","")
-            } for s in srcs])
+        if sources:
+            df = pd.DataFrame([{"title": s.get("title",""), "url": s.get("url","")} for s in sources])
             st.dataframe(df, width="stretch", hide_index=True)
         else:
             st.info("No sources found.")
@@ -141,7 +157,9 @@ if run_btn:
         facts = brief.get("key_facts") or []
         if facts:
             df_f = pd.DataFrame([{
-                "fact": f.get("fact",""), "evidence_url": f.get("evidence_url",""), "confidence": f.get("confidence", 0.0)
+                "fact": f.get("fact",""),
+                "evidence_url": f.get("evidence_url",""),
+                "confidence": f.get("confidence", 0.0),
             } for f in facts])
             st.dataframe(df_f, width="stretch", hide_index=True)
         else:
