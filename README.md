@@ -269,3 +269,6 @@ If you hit an edge case, grab the **JSON** from the download button, open a bug,
 *   topic/URL you used,
 *   whether you’re on local or Cloud,
 *   console logs / screenshots.
+-------------
+
+# *** If you made it this far, you’re definitely not leaving without giving a star 🎀  ***
