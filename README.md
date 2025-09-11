@@ -53,23 +53,39 @@ Features
 Project layout
 -----------------
 ```
-├─ app.py                     # Streamlit UI, robust imports, writer fallback, ref summaries
-├─ src/
-│  ├─ __init__.py
-│  ├─ graph.py                # builds LangGraph and exports `compiled`
-│  ├─ state.py                # GraphState dataclass / typing
-│  ├─ agents.py               # get_llm, run_researcher, run_analyst, run_writer
-│  ├─ observability.py        # get_callbacks (LangSmith) – optional
-│  ├─ fallbacks.py            # retry helpers (optional)
-│  ├─ tools/
-│  │  ├─ search.py            # ddgs (DuckDuckGo) + Wikipedia fallback
-│  │  └─ url2md.py            # URL→Markdown cascade (Rapid → Tavily → Jina → local)
-├─ artifacts/                 # outputs (local CLI run)
+InfoOtter/
+├─ .root/
 ├─ .streamlit/
-│  └─ config.toml            # Streamlit configs
-├─ requirements.txt
-└─ .env.example               # optional for local
+│  ├─ config.toml
+│  └─ secrets.toml
+├─ artifacts/
+│  ├─ brief.md
+│  ├─ sample_output.json
+│  └─ trace.jsonl
+├─ src/
+│  ├─ __pycache__/
+│  ├─ guardrails/
+│  │  └─ moderation.py
+│  ├─ tools/
+│  │  ├─ __pycache__/
+│  │  ├─ html_tables.py
+│  │  ├─ readability.py
+│  │  ├─ search.py
+│  │  ├─ url2md.py
+│  │  └─ __init__.py
+│  ├─ agents.py
+│  ├─ fallbacks.py
+│  ├─ graph.py
+│  ├─ observability.py
+│  └─ state.py
+├─ tests/
+│  └─ test_smoke.py
+├─ .env
+├─ .env.example
+├─ app.py
+└─ requirements.txt
 ```
+
 Requirements
 ---------------
 ```pip install -r requirements.txt```    
