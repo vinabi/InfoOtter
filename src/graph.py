@@ -64,6 +64,7 @@ graph.add_edge("writer", "reviewer")
 graph.add_edge("reviewer", END)
 
 compiled = graph.compile()
+__all__ = ["compiled"]
 
 def main(topic: str | None = None):
     q = topic or input("Enter the topic for market research: ").strip()
