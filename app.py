@@ -40,7 +40,7 @@ st.caption("Query → Search → Analyze → Write → Markdown")
 with st.sidebar:
     st.header("Settings")
 
-    default_topic = os.getenv("QUERY", "").strip().strip('"') or "agent-to-agent (A2A) and Model Context Protocol (MCP)"
+    default_topic = os.getenv("QUERY", "").strip().strip('"') or "opening a cafe in 2025 ☕︎"
     topic = st.text_area("Research topic", value=default_topic, height=90,
                          placeholder="e.g., artificial intelligence applications in healthcare")
 
