@@ -23,7 +23,7 @@ from src.graph import compiled
 from src.observability import get_callbacks
 
 # ---------- UI ----------
-st.set_page_config(page_title="Market Research Multiagent", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Market Research Multiagent", page_icon="ᯓ➤", layout="wide")
 st.markdown("""
 <style>
 div[data-testid="stAlert"], div[role="alert"], div.stAlert{
