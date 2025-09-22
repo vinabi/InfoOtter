@@ -23,7 +23,7 @@ from src.graph import compiled
 from src.observability import get_callbacks
 
 # ---------- UI ----------
-st.set_page_config(page_title="Market Research Multiagent", page_icon="ᯓ➤", layout="wide")
+st.set_page_config(page_title="InfoOtter", page_icon="ᯓ➤", layout="wide")
 st.markdown("""
 <style>
 div[data-testid="stAlert"], div[role="alert"], div.stAlert{
@@ -33,8 +33,8 @@ div[data-testid="stAlert"] *,div[role="alert"] *{color:#fff!important;fill:#fff!
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Market Research Multiagent")
-st.caption("Query → Search → Analyze → Write → Markdown")
+st.title("ᯓ➤ InfoOtter")
+st.caption("Market Research Multiagent")
 
 # Sidebar controls
 with st.sidebar:
